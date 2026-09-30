@@ -14,7 +14,39 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      companion_memories: {
+        Row: {
+          created_at: string
+          id: string
+          importance: number
+          memory_key: string
+          memory_value: string
+          owner_key: string
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          importance?: number
+          memory_key: string
+          memory_value: string
+          owner_key: string
+          source?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          importance?: number
+          memory_key?: string
+          memory_value?: string
+          owner_key?: string
+          source?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
