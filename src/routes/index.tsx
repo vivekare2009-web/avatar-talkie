@@ -643,7 +643,7 @@ function CompanionApp() {
               min={2000}
               max={30000}
               step={1000}
-              onValueChange={([value]) => update({ boundaryCooldownMs: value })}
+              onValueChange={([value]) => update({ boundaryCooldownMs: value ?? 8000 })}
             />
           </div>
 
