@@ -31,6 +31,7 @@ import {
 } from "@/lib/companion/memory.functions";
 import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } from "@/lib/companion/settings";
 import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
+import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
 
 export const Route = createFileRoute("/")({
@@ -66,7 +67,7 @@ function CompanionApp() {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [avatarState, setAvatarState] = useState<AvatarState>("IDLE");
-  const [sources, setSources] = useState<Partial<Record<AvatarState, string>>>({});
+  const [sources, setSources] = useState<Partial<Record<AvatarState, string>>>(BUNDLED_CLIPS);
   const [assetMeta, setAssetMeta] = useState<Partial<Record<AvatarState, AssetMeta>>>({});
   const [memories, setMemories] = useState<MemoryRow[]>([]);
   const [memoryBusy, setMemoryBusy] = useState(false);
@@ -114,7 +115,7 @@ function CompanionApp() {
     revokeAssets.current();
     const library = await loadAssetLibrary();
     revokeAssets.current = library.revoke;
-    setSources(library.urls);
+    setSources({ ...BUNDLED_CLIPS, ...library.urls });
     setAssetMeta(library.meta);
   }, []);
 
