@@ -1,24 +1,695 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload } from "lucide-react";
+import { toast } from "sonner";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
+import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
+import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { Toaster } from "@/components/ui/sonner";
+import {
+  AVATAR_STATES,
+  EXPECTED_ASSET_FILENAMES,
+  STATE_LABELS,
+  type AvatarState,
+} from "@/lib/companion/avatarStates";
+import { AvatarVideoStateManager } from "@/lib/companion/AvatarVideoStateManager";
+import { sendChat } from "@/lib/companion/chat.functions";
+import { detectLanguage, languageLabel, resolveReplyLanguage, type PreferredLanguage } from "@/lib/companion/language";
+import {
+  clearMemories,
+  forgetMemory,
+  listMemories,
+  saveMemory,
+  type MemoryRow,
+} from "@/lib/companion/memory.functions";
+import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } from "@/lib/companion/settings";
+import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
+import { VoiceController } from "@/lib/companion/voice";
+
 export const Route = createFileRoute("/")({
-  component: Index,
+  head: () => ({
+    meta: [
+      { title: "C2 — AI Companion with a real video avatar" },
+      {
+        name: "description",
+        content:
+          "C2 is a Hindi/Hinglish AI companion with a 9:16 video avatar, idle/thinking/talking states, persistent memory and configurable touch boundaries.",
+      },
+      { property: "og:title", content: "C2 — AI Companion with a real video avatar" },
+      {
+        property: "og:description",
+        content: "Hindi/Hinglish AI companion with a video avatar, persistent memory and boundary-aware touch.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+  }),
+  component: CompanionApp,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
+type ChatMessage = { id: string; role: "user" | "assistant"; content: string; language: string };
+
+function uid() {
+  return Math.random().toString(36).slice(2);
+}
+
+function CompanionApp() {
+  const [settings, setSettings] = useState<CompanionSettings | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [thinking, setThinking] = useState(false);
+  const [avatarState, setAvatarState] = useState<AvatarState>("IDLE");
+  const [sources, setSources] = useState<Partial<Record<AvatarState, string>>>({});
+  const [assetMeta, setAssetMeta] = useState<Partial<Record<AvatarState, AssetMeta>>>({});
+  const [memories, setMemories] = useState<MemoryRow[]>([]);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [showZones, setShowZones] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("idle");
+  const [listening, setListening] = useState(false);
+
+  const manager = useRef<AvatarVideoStateManager | null>(null);
+  const voice = useRef<VoiceController | null>(null);
+  const revokeAssets = useRef<() => void>(() => {});
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const log = useCallback((message: string) => {
+    setLogs((prev) => [`${new Date().toLocaleTimeString()} · ${message}`, ...prev].slice(0, 60));
+  }, []);
+
+  // Settings + state machine + voice: created once, cleaned up on unmount.
+  useEffect(() => {
+    const loaded = loadSettings();
+    setSettings(loaded);
+    saveSettings(loaded);
+
+    const stateManager = new AvatarVideoStateManager();
+    manager.current = stateManager;
+    const unsubscribe = stateManager.subscribe((next, event) => {
+      setAvatarState(next);
+      log(`state ${event.from} → ${event.to} (${event.reason})`);
+    });
+    voice.current = new VoiceController();
+
+    return () => {
+      unsubscribe();
+      stateManager.dispose();
+      voice.current?.dispose();
+      voice.current = null;
+      manager.current = null;
+    };
+  }, [log]);
+
+  // Load stored avatar clips.
+  const refreshAssets = useCallback(async () => {
+    revokeAssets.current();
+    const library = await loadAssetLibrary();
+    revokeAssets.current = library.revoke;
+    setSources(library.urls);
+    setAssetMeta(library.meta);
+  }, []);
+
+  useEffect(() => {
+    void refreshAssets();
+    return () => revokeAssets.current();
+  }, [refreshAssets]);
+
+  const refreshMemories = useCallback(async (ownerKey: string) => {
+    const result = await listMemories({ data: { ownerKey } });
+    if (!result.ok) {
+      toast.error(result.error ?? "Could not load memories.");
+      return;
+    }
+    setMemories(result.data ?? []);
+  }, []);
+
+  useEffect(() => {
+    if (settings?.ownerKey) void refreshMemories(settings.ownerKey);
+  }, [settings?.ownerKey, refreshMemories]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, thinking]);
+
+  const update = useCallback((patch: Partial<CompanionSettings>) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      saveSettings(next);
+      return next;
+    });
+  }, []);
+
+  const speak = useCallback(
+    (text: string, language: "hi" | "hinglish" | "en") => {
+      if (!settings || !settings.autoSpeak) return;
+      const stateManager = manager.current;
+      voice.current?.speak(
+        text,
+        {
+          engine: settings.voiceEngine,
+          language,
+          geminiVoice: settings.geminiVoice,
+          sovitsUrl: settings.sovitsUrl,
+        },
+        {
+          onStart: () => {
+            setVoiceStatus("speaking");
+            stateManager?.setSustained("TALKING", "voice started");
+          },
+          onEnd: () => {
+            setVoiceStatus("idle");
+            stateManager?.setSustained("IDLE", "voice ended");
+          },
+          onError: (message) => {
+            setVoiceStatus("error");
+            toast.error(message);
+          },
+        },
+      );
+    },
+    [settings],
+  );
+
+  const handleSend = useCallback(
+    async (raw?: string) => {
+      const text = (raw ?? input).trim();
+      if (!text || !settings || thinking) return;
+      const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
+      const userMessage: ChatMessage = { id: uid(), role: "user", content: text, language: resolved.language };
+      const history = [...messages, userMessage];
+      setMessages(history);
+      setInput("");
+      setThinking(true);
+      manager.current?.setSustained("THINKING", "generating reply");
+      log(`language → ${resolved.language} (${resolved.reason})`);
+
+      try {
+        const reply = await sendChat({
+          data: {
+            ownerKey: settings.ownerKey,
+            displayName: settings.displayName,
+            language: resolved.language,
+            messages: history.slice(-12).map((m) => ({ role: m.role, content: m.content })),
+            memories: memories.map((m) => ({ key: m.memory_key, value: m.memory_value })),
+          },
+        });
+
+        setMessages((prev) => [
+          ...prev,
+          { id: uid(), role: "assistant", content: reply.reply, language: reply.language },
+        ]);
+        if (reply.notice) toast.warning(reply.notice);
+        if (reply.saved.length) {
+          toast.success(`Saved to memory: ${reply.saved.map((s) => s.key).join(", ")}`);
+          void refreshMemories(settings.ownerKey);
+        }
+        if (reply.mood === "upset") manager.current?.playTransient("UPSET", 6000, "upset reply");
+        setThinking(false);
+        if (settings.autoSpeak) speak(reply.reply, reply.language);
+        else manager.current?.setSustained("IDLE", "reply shown");
+      } catch {
+        setThinking(false);
+        manager.current?.setSustained("IDLE", "chat failed");
+        toast.error("C2 could not answer right now. Please try again.");
+      }
+    },
+    [input, settings, thinking, messages, memories, log, refreshMemories, speak],
+  );
+
+  const handleTouch = useCallback(
+    (result: TouchResult) => {
+      if (result.triggeredBoundary) {
+        manager.current?.playTransient("PERSONAL_BOUNDARY", 8000, "protected zone touched");
+        log(`boundary triggered by zone: ${result.zone?.label}`);
+        return;
+      }
+      if (result.blockedByCooldown) {
+        log("boundary skipped (cooldown)");
+        return;
+      }
+      log(`tap on ${result.zone ? result.zone.label : "open area"}`);
+    },
+    [log],
+  );
+
+  const onTransientEnded = useCallback((state: AvatarState) => {
+    manager.current?.endTransient(`${state} clip finished`);
+  }, []);
+
+  const handleUpload = useCallback(
+    async (state: AvatarState, file?: File | null) => {
+      if (!file) return;
+      if (!file.type.startsWith("video/")) {
+        toast.error("Please choose a video file (.mp4).");
+        return;
+      }
+      await putAsset(state, file);
+      await refreshAssets();
+      toast.success(`${STATE_LABELS[state]} clip saved on this device.`);
+      log(`asset saved: ${state} (${file.name})`);
+    },
+    [refreshAssets, log],
+  );
+
+  const detection = useMemo(() => detectLanguage(input), [input]);
+
+  const startListening = useCallback(() => {
+    const SpeechRecognition =
+      (window as unknown as { SpeechRecognition?: new () => never; webkitSpeechRecognition?: new () => never })
+        .SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: new () => never }).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast.error("This browser can't listen to the microphone. Type instead.");
+      return;
+    }
+    try {
+      const recognition = new SpeechRecognition() as unknown as {
+        lang: string;
+        interimResults: boolean;
+        onresult: (event: { results: { 0: { 0: { transcript: string } } } }) => void;
+        onerror: (event: { error: string }) => void;
+        onend: () => void;
+        start: () => void;
+      };
+      recognition.lang = settings?.preferredLanguage === "en" ? "en-IN" : "hi-IN";
+      recognition.interimResults = false;
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        setInput(transcript);
+        void handleSend(transcript);
+      };
+      recognition.onerror = (event) => {
+        setListening(false);
+        toast.error(
+          event.error === "not-allowed"
+            ? "Microphone permission was denied. Allow it in your browser settings."
+            : "The microphone stopped. Try again.",
+        );
+      };
+      recognition.onend = () => setListening(false);
+      setListening(true);
+      recognition.start();
+    } catch {
+      setListening(false);
+      toast.error("Could not start the microphone.");
+    }
+  }, [settings?.preferredLanguage, handleSend]);
+
+  if (!settings) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
+    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-background text-foreground">
+      <Toaster />
+      <header className="flex items-center justify-between px-4 py-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">C2</h1>
+          <p className="text-xs text-muted-foreground">
+            {STATE_LABELS[avatarState]} · voice {voiceStatus} · {languageLabel(detection.language)}
+          </p>
+        </div>
+        <Button variant="ghost" size="icon" onClick={() => setShowZones((v) => !v)} aria-label="Show touch zones">
+          <SettingsIcon className="h-5 w-5" />
+        </Button>
+      </header>
+
+      <div className="relative mx-4 aspect-[9/16] overflow-hidden rounded-2xl border border-border shadow-lg">
+        <AvatarVideoPlayer
+          state={avatarState}
+          sources={sources}
+          onTransientEnded={onTransientEnded}
+          onLog={log}
+        />
+        <AvatarTouchLayer
+          enabled={settings.touchEnabled}
+          protectedZonesEnabled={settings.protectedZonesEnabled}
+          zones={settings.zones}
+          cooldownMs={settings.boundaryCooldownMs}
+          showZones={showZones}
+          onTouch={handleTouch}
+        />
+      </div>
+
+      {missingAssets.length > 0 && (
+        <p className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          {missingAssets.length} of 5 avatar clips are missing. Add them in the Avatar tab — nothing is simulated.
+        </p>
+      )}
+
+      <Tabs defaultValue="chat" className="mt-3 flex-1 px-4 pb-6">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="chat">Chat</TabsTrigger>
+          <TabsTrigger value="avatar">Avatar</TabsTrigger>
+          <TabsTrigger value="memory">Memory</TabsTrigger>
+          <TabsTrigger value="settings">Setup</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="chat" className="mt-3 space-y-3">
+          <div ref={scrollRef} className="h-64 space-y-2 overflow-y-auto rounded-xl border border-border p-3">
+            {messages.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Kuch bhi likho — Hindi, Hinglish ya English. C2 usi language me reply karegi.
+              </p>
+            )}
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={
+                  message.role === "user"
+                    ? "ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground"
+                    : "w-fit max-w-[85%] rounded-2xl bg-card px-3 py-2 text-sm text-card-foreground"
+                }
+              >
+                {message.content}
+              </div>
+            ))}
+            {thinking && <p className="text-xs text-muted-foreground">C2 soch rahi hai…</p>}
+          </div>
+
+          <div className="flex items-end gap-2">
+            <Textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void handleSend();
+                }
+              }}
+              placeholder="Message C2…"
+              className="min-h-11 resize-none"
+              autoFocus
+            />
+            <Button variant="outline" size="icon" onClick={startListening} disabled={listening} aria-label="Speak">
+              <Mic className="h-4 w-4" />
+            </Button>
+            <Button size="icon" onClick={() => void handleSend()} disabled={thinking} aria-label="Send">
+              {thinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Detected: {languageLabel(detection.language)} · confidence {detection.confidence}
+            {detection.matched.length ? ` · signals: ${detection.matched.join(", ")}` : ""}
+          </p>
+        </TabsContent>
+
+        <TabsContent value="avatar" className="mt-3 space-y-3">
+          {AVATAR_STATES.map((state) => (
+            <div key={state} className="rounded-xl border border-border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">{STATE_LABELS[state]}</p>
+                  <p className="text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {assetMeta[state]
+                      ? `Loaded: ${assetMeta[state]?.name} (${Math.round((assetMeta[state]?.size ?? 0) / 1024)} KB)`
+                      : "Not uploaded yet"}
+                  </p>
+                </div>
+                <div className="flex gap-1">
+                  <Button variant="outline" size="sm" asChild>
+                    <label className="cursor-pointer">
+                      <Upload className="mr-1 h-3 w-3" />
+                      Upload
+                      <input
+                        type="file"
+                        accept="video/mp4,video/*"
+                        className="hidden"
+                        onChange={(event) => void handleUpload(state, event.target.files?.[0])}
+                      />
+                    </label>
+                  </Button>
+                  {assetMeta[state] && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        await deleteAsset(state);
+                        await refreshAssets();
+                      }}
+                      aria-label="Remove clip"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
+                  <Button variant="secondary" size="sm" onClick={() => manager.current?.setSustained("IDLE", "test")}>
+                    Reset
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("IDLE", "test")}>
+              Test idle
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("THINKING", "test")}>
+              Test thinking
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("TALKING", "test")}>
+              Test talking
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => manager.current?.playTransient("UPSET", 6000, "test")}>
+              Test upset
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => manager.current?.playTransient("PERSONAL_BOUNDARY", 8000, "test")}
+            >
+              Test boundary
+            </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="memory" className="mt-3 space-y-3">
+          <div className="flex gap-2">
+            <Input placeholder="Key (e.g. city)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+            <Input placeholder="Value" value={newValue} onChange={(e) => setNewValue(e.target.value)} />
+            <Button
+              size="sm"
+              disabled={memoryBusy}
+              onClick={async () => {
+                if (!newKey.trim() || !newValue.trim()) return;
+                setMemoryBusy(true);
+                const result = await saveMemory({
+                  data: { ownerKey: settings.ownerKey, key: newKey.trim(), value: newValue.trim(), source: "manual", importance: 3 },
+                });
+                setMemoryBusy(false);
+                if (!result.ok) {
+                  toast.error(result.error ?? "The memory was NOT saved.");
+                  return;
+                }
+                setNewKey("");
+                setNewValue("");
+                toast.success("Memory saved.");
+                void refreshMemories(settings.ownerKey);
+              }}
+            >
+              Save
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            {memories.length === 0 && <p className="text-xs text-muted-foreground">No memories stored yet.</p>}
+            {memories.map((memory) => (
+              <div key={memory.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">{memory.memory_key}</p>
+                  <p className="text-xs text-muted-foreground">{memory.memory_value}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {memory.source} · updated {new Date(memory.updated_at).toLocaleString()}
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={async () => {
+                    const result = await forgetMemory({ data: { ownerKey: settings.ownerKey, id: memory.id } });
+                    if (!result.ok) {
+                      toast.error(result.error ?? "The memory was NOT deleted.");
+                      return;
+                    }
+                    toast.success("Memory forgotten.");
+                    void refreshMemories(settings.ownerKey);
+                  }}
+                  aria-label="Forget"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void refreshMemories(settings.ownerKey)}
+            >
+              Reload from server
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={async () => {
+                const result = await clearMemories({ data: { ownerKey: settings.ownerKey } });
+                if (!result.ok) {
+                  toast.error(result.error ?? "Memories were NOT cleared.");
+                  return;
+                }
+                toast.success(`Cleared ${result.data?.removed ?? 0} memories.`);
+                void refreshMemories(settings.ownerKey);
+              }}
+            >
+              Clear all
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Memory test: save a fact, refresh the page, then ask C2 about it. Your memories are tied to this profile key
+            ({settings.ownerKey.slice(0, 12)}…) and are never mixed with another person's.
+          </p>
+        </TabsContent>
+
+        <TabsContent value="settings" className="mt-3 space-y-4">
+          <div className="space-y-1">
+            <Label>Your name</Label>
+            <Input value={settings.displayName} onChange={(e) => update({ displayName: e.target.value })} />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Preferred language</Label>
+            <div className="flex flex-wrap gap-2">
+              {(["hinglish", "hi", "en", "auto"] as PreferredLanguage[]).map((option) => (
+                <Button
+                  key={option}
+                  size="sm"
+                  variant={settings.preferredLanguage === option ? "default" : "outline"}
+                  onClick={() => update({ preferredLanguage: option })}
+                >
+                  {option === "hinglish" ? "Hinglish" : option === "hi" ? "हिंदी" : option === "en" ? "English" : "Auto"}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Voice</Label>
+            <div className="flex flex-wrap gap-2">
+              {(["browser", "gemini", "sovits"] as VoiceEngine[]).map((engine) => (
+                <Button
+                  key={engine}
+                  size="sm"
+                  variant={settings.voiceEngine === engine ? "default" : "outline"}
+                  onClick={() => update({ voiceEngine: engine })}
+                >
+                  {engine === "browser" ? "Device voice" : engine === "gemini" ? "Gemini voice" : "GPT-SoVITS"}
+                </Button>
+              ))}
+            </div>
+            {settings.voiceEngine === "sovits" && (
+              <>
+                <Input
+                  placeholder="https://your-gpt-sovits-server/tts"
+                  value={settings.sovitsUrl}
+                  onChange={(e) => update({ sovitsUrl: e.target.value })}
+                />
+                {!settings.sovitsUrl && (
+                  <p className="text-[11px] text-destructive">GPT-SoVITS is not configured yet.</p>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label>Speak replies out loud</Label>
+            <Switch checked={settings.autoSpeak} onCheckedChange={(v) => update({ autoSpeak: v })} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label>Touch interaction</Label>
+            <Switch checked={settings.touchEnabled} onCheckedChange={(v) => update({ touchEnabled: v })} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label>Protected zones (boundary reaction)</Label>
+            <Switch
+              checked={settings.protectedZonesEnabled}
+              onCheckedChange={(v) => update({ protectedZonesEnabled: v })}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Boundary cooldown: {(settings.boundaryCooldownMs / 1000).toFixed(0)}s</Label>
+            <Slider
+              value={[settings.boundaryCooldownMs]}
+              min={2000}
+              max={30000}
+              step={1000}
+              onValueChange={([value]) => update({ boundaryCooldownMs: value })}
+            />
+          </div>
+
+          {settings.zones.map((zone, index) => (
+            <div key={zone.id} className="rounded-lg border border-border p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">{zone.label}</p>
+                <Switch
+                  checked={zone.protected}
+                  onCheckedChange={(v) => {
+                    const zones = settings.zones.map((z, i) => (i === index ? { ...z, protected: v } : z));
+                    update({ zones });
+                  }}
+                />
+              </div>
+              {(["x", "y", "w", "h"] as const).map((axis) => (
+                <div key={axis} className="mt-2">
+                  <Label className="text-[11px] uppercase">
+                    {axis}: {zone[axis]}%
+                  </Label>
+                  <Slider
+                    value={[zone[axis]]}
+                    min={0}
+                    max={100}
+                    step={1}
+                    onValueChange={([value]) => {
+                      const zones = settings.zones.map((z, i) => (i === index ? { ...z, [axis]: value } : z));
+                      update({ zones });
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          ))}
+
+          <div className="rounded-lg border border-border p-3">
+            <p className="mb-2 text-sm font-medium">Diagnostics</p>
+            <div className="max-h-40 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
+              {logs.length === 0 && <p>No events yet.</p>}
+              {logs.map((line, index) => (
+                <p key={index}>{line}</p>
+              ))}
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
