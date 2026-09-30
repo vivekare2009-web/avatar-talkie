@@ -261,7 +261,14 @@ function CompanionApp() {
     [refreshAssets, log],
   );
 
-  const detection = useMemo(() => detectLanguage(input), [input]);
+  const lastUserText = useMemo(
+    () => [...messages].reverse().find((m) => m.role === "user")?.content ?? "",
+    [messages],
+  );
+  const detection = useMemo(
+    () => detectLanguage(input.trim() ? input : lastUserText),
+    [input, lastUserText],
+  );
 
   const startListening = useCallback(() => {
     const SpeechRecognition =
