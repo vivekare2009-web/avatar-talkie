@@ -14,7 +14,7 @@ export type ChatReply = {
   fallback: boolean;
   mood: "neutral" | "upset";
   saved: { key: string; value: string }[];
-  notice?: string;
+  notice?: string | undefined;
   model: string;
 };
 
