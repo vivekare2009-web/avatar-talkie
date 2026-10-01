@@ -35,6 +35,7 @@ export function AvatarVideoPlayer({
   const videoA = useRef<HTMLVideoElement | null>(null);
   const videoB = useRef<HTMLVideoElement | null>(null);
   const [front, setFront] = useState<0 | 1>(0);
+  const frontRef = useRef<0 | 1>(0);
   const [visibleState, setVisibleState] = useState<AvatarState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -86,19 +87,21 @@ export function AvatarVideoPlayer({
       if (cancelled || token !== loadToken.current) return;
       cleanup();
       enforceMuted(target);
-      target.loop = !isTransient(state);
-      const playPromise = target.play();
+      const nextVideo = target;
+      if (!nextVideo) return;
+      nextVideo.loop = !isTransient(state);
+      const playPromise = nextVideo.play();
       const swap = () => {
         if (cancelled || token !== loadToken.current) return;
         currentSrc.current = src;
         setVisibleState(state);
-        setFront((value) => (value === 0 ? 1 : 0));
+        frontRef.current = front === 0 ? 1 : 0;
+        setFront(frontRef.current);
         setLoading(false);
         log(`clip ready: ${state}`);
         if (showing) {
           window.setTimeout(() => {
-            if (token !== loadToken.current) return;
-            showing.pause();
+            if (showing !== (frontRef.current === 0 ? videoA.current : videoB.current)) showing.pause();
           }, 150);
         }
       };
@@ -133,7 +136,7 @@ export function AvatarVideoPlayer({
     return () => {
       cancelled = true;
       cleanup();
-      if (target !== showing && token !== loadToken.current) target.pause();
+      if (target !== (frontRef.current === 0 ? videoA.current : videoB.current)) target.pause();
     };
     // visibleState intentionally excluded: it is set by this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -159,8 +162,8 @@ export function AvatarVideoPlayer({
     };
   }, []);
 
-  const handleEnded = useCallback(() => {
-    if (isTransient(state)) onTransientEnded(state);
+  const handleEnded = useCallback((index: number) => {
+    if (index === frontRef.current && isTransient(state)) onTransientEnded(state);
   }, [state, onTransientEnded]);
 
   return (
@@ -170,10 +173,10 @@ export function AvatarVideoPlayer({
           key={index}
           ref={ref}
           muted
-          defaultValue={undefined}
           playsInline
           preload="auto"
-          onEnded={handleEnded}
+          onEnded={() => handleEnded(index)}
+          onVolumeChange={(event) => enforceMuted(event.currentTarget)}
           className={cn(
             "absolute inset-0 h-full w-full object-cover transition-opacity duration-150",
             front === index ? "opacity-100" : "opacity-0",
