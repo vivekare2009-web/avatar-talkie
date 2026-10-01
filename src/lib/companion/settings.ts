@@ -25,14 +25,14 @@ export type CompanionSettings = {
   protectedZonesEnabled: boolean;
   boundaryCooldownMs: number;
   zones: TouchZone[];
+  monthlyBudget: number;
 };
 
 const KEY = "c2.settings.v2";
 
 export const DEFAULT_ZONES: TouchZone[] = [
-  { id: "head", label: "Head pat", x: 34, y: 4, w: 32, h: 14, protected: false },
-  { id: "chest", label: "Chest", x: 32, y: 34, w: 36, h: 16, protected: true },
-  { id: "waist", label: "Waist", x: 32, y: 56, w: 36, h: 14, protected: true },
+  { id: "chest", label: "Chest", x: 34, y: 36, w: 32, h: 12, protected: true },
+  { id: "waist", label: "Hip / waist", x: 31, y: 59, w: 38, h: 13, protected: true },
 ];
 
 export function createOwnerKey() {
@@ -57,6 +57,7 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   protectedZonesEnabled: false,
   boundaryCooldownMs: 8000,
   zones: DEFAULT_ZONES,
+  monthlyBudget: 0,
 };
 
 export function loadSettings(): CompanionSettings {

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Clapperboard, Brain, Music2, ChevronDown, ChevronUp, Play, Pause, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
@@ -33,6 +33,7 @@ import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } 
 import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
+import { searchSongs } from "@/lib/companion/music.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -77,6 +78,20 @@ function CompanionApp() {
   const [showZones, setShowZones] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle");
   const [listening, setListening] = useState(false);
+  const [activeTab, setActiveTab] = useState("chat");
+  const [chatExpanded, setChatExpanded] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [musicQuery, setMusicQuery] = useState("");
+  const [songs, setSongs] = useState<{ id: string; title: string; artist: string }[]>([]);
+  const [musicError, setMusicError] = useState("");
+  const [musicBusy, setMusicBusy] = useState(false);
+  const [playingSong, setPlayingSong] = useState<string | null>(null);
+  const [musicPaused, setMusicPaused] = useState(false);
+  const [requests, setRequests] = useState(0);
+  const [estimatedTokens, setEstimatedTokens] = useState(0);
+  const [musicAutoplayNotice, setMusicAutoplayNotice] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
 
   const manager = useRef<AvatarVideoStateManager | null>(null);
   const voice = useRef<VoiceController | null>(null);
@@ -105,6 +120,7 @@ function CompanionApp() {
       unsubscribe();
       stateManager.dispose();
       voice.current?.dispose();
+      recognitionRef.current?.stop();
       voice.current = null;
       manager.current = null;
     };
@@ -164,6 +180,10 @@ function CompanionApp() {
         },
         {
           onStart: () => {
+            if (playingSong) {
+              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: "pauseVideo", args: [] }), "https://www.youtube-nocookie.com");
+              setMusicPaused(true);
+            }
             setVoiceStatus("speaking");
             stateManager?.setSustained("TALKING", "voice started");
           },
@@ -178,19 +198,45 @@ function CompanionApp() {
         },
       );
     },
-    [settings],
+    [settings, playingSong],
   );
+
+  const findMusic = useCallback(async (query: string) => {
+    if (query.trim().length < 2 || musicBusy) return;
+    setMusicBusy(true);
+    setMusicError("");
+    setMusicQuery(query);
+    try {
+      const result = await searchSongs({ data: query });
+      setSongs(result.songs);
+      setMusicError(result.error ?? "");
+    } catch {
+      setMusicError("Search failed. Please try again.");
+    } finally {
+      setMusicBusy(false);
+    }
+  }, [musicBusy]);
 
   const handleSend = useCallback(
     async (raw?: string) => {
       const text = (raw ?? input).trim();
       if (!text || !settings || thinking) return;
+      const songRequest = text.match(/(?:play\s+(.+)|(.+?)\s+(?:play\s+karo|bajao|chalao))/i);
+      if (songRequest) {
+        const title = (songRequest[1] ?? songRequest[2] ?? "").trim();
+        setInput("");
+        setActiveTab("music");
+        void findMusic(title);
+        return;
+      }
       const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
       const userMessage: ChatMessage = { id: uid(), role: "user", content: text, language: resolved.language };
       const history = [...messages, userMessage];
       setMessages(history);
       setInput("");
       setThinking(true);
+      setRequests((n) => n + 1);
+      setEstimatedTokens((n) => n + Math.ceil((text.length + history.slice(-12).reduce((a, m) => a + m.content.length, 0)) / 3));
       manager.current?.setSustained("THINKING", "generating reply");
       log(`language → ${resolved.language} (${resolved.reason})`);
 
@@ -209,6 +255,7 @@ function CompanionApp() {
           ...prev,
           { id: uid(), role: "assistant", content: reply.reply, language: reply.language },
         ]);
+        setEstimatedTokens((n) => n + Math.ceil(reply.reply.length / 3));
         if (reply.notice) toast.warning(reply.notice);
         if (reply.saved.length) {
           toast.success(`Saved to memory: ${reply.saved.map((s) => s.key).join(", ")}`);
@@ -224,13 +271,16 @@ function CompanionApp() {
         toast.error("C2 could not answer right now. Please try again.");
       }
     },
-    [input, settings, thinking, messages, memories, log, refreshMemories, speak],
+    [input, settings, thinking, messages, memories, log, refreshMemories, speak, findMusic],
   );
 
   const handleTouch = useCallback(
     (result: TouchResult) => {
       if (result.triggeredBoundary) {
+        voice.current?.stop();
+        manager.current?.setSustained("IDLE", "boundary");
         manager.current?.playTransient("PERSONAL_BOUNDARY", 8000, "protected zone touched");
+        if (settings?.autoSpeak) speak("Arre, please thoda personal space do. Hum aaram se baat karte hain.", "hinglish");
         log(`boundary triggered by zone: ${result.zone?.label}`);
         return;
       }
@@ -240,7 +290,7 @@ function CompanionApp() {
       }
       log(`tap on ${result.zone ? result.zone.label : "open area"}`);
     },
-    [log],
+    [log, settings?.autoSpeak, speak],
   );
 
   const onTransientEnded = useCallback((state: AvatarState) => {
@@ -288,7 +338,10 @@ function CompanionApp() {
         onerror: (event: { error: string }) => void;
         onend: () => void;
         start: () => void;
+        stop: () => void;
       };
+      if (recognitionRef.current) return;
+      recognitionRef.current = recognition;
       recognition.lang = settings?.preferredLanguage === "en" ? "en-IN" : "hi-IN";
       recognition.interimResults = false;
       recognition.onresult = (event) => {
@@ -304,10 +357,11 @@ function CompanionApp() {
             : "The microphone stopped. Try again.",
         );
       };
-      recognition.onend = () => setListening(false);
+      recognition.onend = () => { setListening(false); recognitionRef.current = null; };
       setListening(true);
       recognition.start();
     } catch {
+      recognitionRef.current = null;
       setListening(false);
       toast.error("Could not start the microphone.");
     }
@@ -324,7 +378,7 @@ function CompanionApp() {
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-background text-foreground">
+    <div className="c2-app mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
       <Toaster />
       <header className="flex items-center justify-between px-4 py-3">
         <div>
@@ -338,7 +392,17 @@ function CompanionApp() {
         </Button>
       </header>
 
-      <div className="relative mx-4 aspect-[9/16] overflow-hidden rounded-2xl border border-border shadow-lg">
+      <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
+      <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
+        {([
+          ["chat", MessageCircle, "Chat"], ["avatar", Clapperboard, "Avatar"],
+          ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["music", Music2, "Music"],
+        ] as const).map(([value, Icon, label]) => (
+          <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
+        ))}
+      </TabsList>
+
+      <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border bg-surface-deep shadow-lg">
         <AvatarVideoPlayer
           state={avatarState}
           sources={sources}
@@ -350,47 +414,43 @@ function CompanionApp() {
           protectedZonesEnabled={settings.protectedZonesEnabled}
           zones={settings.zones}
           cooldownMs={settings.boundaryCooldownMs}
-          showZones={showZones}
+          showZones={showZones && !calibrating}
           onTouch={handleTouch}
         />
+        {calibrating && activeTab === "settings" && settings.zones.map((zone, index) => (
+          <div key={zone.id} className="absolute touch-none border-2 border-dashed border-destructive bg-destructive/30" style={{ left: `${zone.x}%`, top: `${zone.y}%`, width: `${zone.w}%`, height: `${zone.h}%` }}
+            onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+              const rect = event.currentTarget.parentElement?.getBoundingClientRect();
+              if (!rect) return;
+              const dx = event.movementX / rect.width * 100;
+              const dy = event.movementY / rect.height * 100;
+              update({ zones: settings.zones.map((item, i) => i === index ? { ...item, x: Math.max(0, Math.min(100 - item.w, item.x + dx)), y: Math.max(0, Math.min(100 - item.h, item.y + dy)) } : item) });
+            }}
+          ><span className="bg-destructive px-1 text-xs text-destructive-foreground">{zone.label} · drag</span></div>
+        ))}
+        {activeTab === "chat" && (
+          <div className="absolute inset-x-2 bottom-2 z-10 rounded-md border border-border bg-card/90 shadow-lg backdrop-blur-md">
+            <Button variant="ghost" className="h-8 w-full justify-between text-xs" onClick={() => setChatExpanded(v => !v)}>
+              <span>Conversation · {messages.length} messages</span>{chatExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+            </Button>
+            {chatExpanded && <div ref={scrollRef} className="max-h-32 space-y-2 overflow-y-auto border-t border-border p-2 text-xs">
+              {messages.length === 0 && <span className="text-muted-foreground">C2 se baat karo…</span>}
+              {messages.slice(-6).map(message => <p key={message.id} className={message.role === "user" ? "text-accent-foreground" : "text-foreground"}><strong>{message.role === "user" ? "You" : "C2"}: </strong>{message.content}</p>)}
+              {thinking && <p>C2 soch rahi hai…</p>}
+            </div>}
+          </div>
+        )}
       </div>
 
       {missingAssets.length > 0 && (
         <p className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-          {missingAssets.length} of 5 avatar clips are missing. Add them in the Avatar tab — nothing is simulated.
+          Missing clips: {missingAssets.map(state => EXPECTED_ASSET_FILENAMES[state]).join(", ")}
         </p>
       )}
 
-      <Tabs defaultValue="chat" className="mt-3 flex-1 px-4 pb-6">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="chat">Chat</TabsTrigger>
-          <TabsTrigger value="avatar">Avatar</TabsTrigger>
-          <TabsTrigger value="memory">Memory</TabsTrigger>
-          <TabsTrigger value="settings">Setup</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="chat" className="mt-3 space-y-3">
-          <div ref={scrollRef} className="h-64 space-y-2 overflow-y-auto rounded-xl border border-border p-3">
-            {messages.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Kuch bhi likho — Hindi, Hinglish ya English. C2 usi language me reply karegi.
-              </p>
-            )}
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={
-                  message.role === "user"
-                    ? "ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground"
-                    : "w-fit max-w-[85%] rounded-2xl bg-card px-3 py-2 text-sm text-card-foreground"
-                }
-              >
-                {message.content}
-              </div>
-            ))}
-            {thinking && <p className="text-xs text-muted-foreground">C2 soch rahi hai…</p>}
-          </div>
-
+        <TabsContent value="chat" className="mt-3 space-y-3 px-3">
           <div className="flex items-end gap-2">
             <Textarea
               value={input}
@@ -403,7 +463,6 @@ function CompanionApp() {
               }}
               placeholder="Message C2…"
               className="min-h-11 resize-none"
-              autoFocus
             />
             <Button variant="outline" size="icon" onClick={startListening} disabled={listening} aria-label="Speak">
               <Mic className="h-4 w-4" />
@@ -418,20 +477,20 @@ function CompanionApp() {
           </p>
         </TabsContent>
 
-        <TabsContent value="avatar" className="mt-3 space-y-3">
+        <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
           {AVATAR_STATES.map((state) => (
             <div key={state} className="rounded-xl border border-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <div>
+                <div className="min-w-0">
                   <p className="text-sm font-medium">{STATE_LABELS[state]}</p>
-                  <p className="text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
+                  <p className="break-all text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
                   <p className="text-[11px] text-muted-foreground">
                     {assetMeta[state]
                       ? `Loaded: ${assetMeta[state]?.name} (${Math.round((assetMeta[state]?.size ?? 0) / 1024)} KB)`
-                      : "Not uploaded yet"}
+                      : sources[state] ? "Original clip included · ready" : "Missing — upload needed"}
                   </p>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex shrink-0 gap-1">
                   <Button variant="outline" size="sm" asChild>
                     <label className="cursor-pointer">
                       <Upload className="mr-1 h-3 w-3" />
@@ -471,8 +530,8 @@ function CompanionApp() {
             <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("THINKING", "test")}>
               Test thinking
             </Button>
-            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("TALKING", "test")}>
-              Test talking
+            <Button size="sm" variant="outline" onClick={() => settings.autoSpeak ? speak("Namaste! Main C2 hoon.", "hinglish") : toast.info("Enable spoken replies in Setup to test talking.")}>
+              Test voice & talking
             </Button>
             <Button size="sm" variant="outline" onClick={() => manager.current?.playTransient("UPSET", 6000, "test")}>
               Test upset
@@ -487,7 +546,7 @@ function CompanionApp() {
           </div>
         </TabsContent>
 
-        <TabsContent value="memory" className="mt-3 space-y-3">
+        <TabsContent value="memory" className="mt-3 space-y-3 px-3">
           <div className="flex gap-2">
             <Input placeholder="Key (e.g. city)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
             <Input placeholder="Value" value={newValue} onChange={(e) => setNewValue(e.target.value)} />
@@ -576,7 +635,7 @@ function CompanionApp() {
           </p>
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-3 space-y-4">
+        <TabsContent value="settings" className="mt-3 space-y-4 px-3">
           <div className="space-y-1">
             <Label>Your name</Label>
             <Input value={settings.displayName} onChange={(e) => update({ displayName: e.target.value })} />
@@ -655,6 +714,11 @@ function CompanionApp() {
             />
           </div>
 
+          <Button variant="outline" size="sm" onClick={() => { setCalibrating(v => !v); setShowZones(false); }}>
+            {calibrating ? "Finish calibration" : "Calibrate zones on video"}
+          </Button>
+          {calibrating && <p className="text-xs text-muted-foreground">Drag a red zone on the video; adjust its size with the sliders below.</p>}
+
           {settings.zones.map((zone, index) => (
             <div key={zone.id} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between">
@@ -687,6 +751,14 @@ function CompanionApp() {
             </div>
           ))}
 
+          <div className="space-y-2 border-t border-border pt-4">
+            <h2 className="text-sm font-semibold">C2 usage · this device</h2>
+            <p className="text-xs text-muted-foreground">{requests} requests · approximately {estimatedTokens.toLocaleString()} text tokens this session. Estimates include visible text only; system instructions, memory and voice usage are not counted.</p>
+            <Label htmlFor="budget">Your monthly budget (USD, 0 = unset)</Label>
+            <Input id="budget" type="number" min="0" step="0.01" value={settings.monthlyBudget || 0} onChange={e => update({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-xs text-muted-foreground">Provider cost, budget used/remaining and Lovable workspace credits: unavailable. This budget is a reference only, not a spending limit.</p>
+          </div>
+
           <div className="rounded-lg border border-border p-3">
             <p className="mb-2 text-sm font-medium">Diagnostics</p>
             <div className="max-h-40 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
@@ -696,6 +768,25 @@ function CompanionApp() {
               ))}
             </div>
           </div>
+        </TabsContent>
+        <TabsContent value="music" className="mt-3 space-y-3 px-3">
+          <div className="flex gap-2">
+            <Input aria-label="Search songs" placeholder="Search songs…" value={musicQuery} onChange={e => setMusicQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void findMusic(musicQuery); }} />
+            <Button aria-label="Search" disabled={musicBusy || musicQuery.trim().length < 2} onClick={() => void findMusic(musicQuery)}>{musicBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}</Button>
+          </div>
+          {musicError && <p role="status" className="text-xs text-destructive">{musicError}</p>}
+          {songs.map(song => <div key={song.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2">
+            <div className="min-w-0"><p className="truncate text-sm">{song.title}</p><p className="truncate text-xs text-muted-foreground">{song.artist}</p></div>
+            <Button variant="outline" size="icon" title={playingSong === song.id && !musicPaused ? "Pause" : "Play"} aria-label={playingSong === song.id && !musicPaused ? "Pause" : "Play"} onClick={() => {
+              if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); setMusicAutoplayNotice(true); return; }
+              const command = musicPaused ? "playVideo" : "pauseVideo";
+              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: command, args: [] }), "https://www.youtube-nocookie.com");
+              setMusicPaused(!musicPaused);
+            }}>{playingSong === song.id && !musicPaused ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
+          </div>)}
+          {playingSong && <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />}
+          {musicAutoplayNotice && <p className="text-xs text-muted-foreground">If mobile playback doesn't start, tap Play inside the video.</p>}
+          <p className="text-xs text-muted-foreground">Tap Play to start on mobile. Music pauses while C2 speaks. Availability depends on the video's playback permissions.</p>
         </TabsContent>
       </Tabs>
     </div>
