@@ -89,6 +89,7 @@ function CompanionApp() {
   const [musicPaused, setMusicPaused] = useState(false);
   const [requests, setRequests] = useState(0);
   const [estimatedTokens, setEstimatedTokens] = useState(0);
+  const [musicAutoplayNotice, setMusicAutoplayNotice] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const recognitionRef = useRef<{ stop: () => void } | null>(null);
 
@@ -200,10 +201,34 @@ function CompanionApp() {
     [settings, playingSong],
   );
 
+  const findMusic = useCallback(async (query: string) => {
+    if (query.trim().length < 2 || musicBusy) return;
+    setMusicBusy(true);
+    setMusicError("");
+    setMusicQuery(query);
+    try {
+      const result = await searchSongs({ data: query });
+      setSongs(result.songs);
+      setMusicError(result.error ?? "");
+    } catch {
+      setMusicError("Search failed. Please try again.");
+    } finally {
+      setMusicBusy(false);
+    }
+  }, [musicBusy]);
+
   const handleSend = useCallback(
     async (raw?: string) => {
       const text = (raw ?? input).trim();
       if (!text || !settings || thinking) return;
+      const songRequest = text.match(/(?:play\s+(.+)|(.+?)\s+(?:play\s+karo|bajao|chalao))/i);
+      if (songRequest) {
+        const title = (songRequest[1] ?? songRequest[2] ?? "").trim();
+        setInput("");
+        setActiveTab("music");
+        void findMusic(title);
+        return;
+      }
       const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
       const userMessage: ChatMessage = { id: uid(), role: "user", content: text, language: resolved.language };
       const history = [...messages, userMessage];
@@ -246,7 +271,7 @@ function CompanionApp() {
         toast.error("C2 could not answer right now. Please try again.");
       }
     },
-    [input, settings, thinking, messages, memories, log, refreshMemories, speak],
+    [input, settings, thinking, messages, memories, log, refreshMemories, speak, findMusic],
   );
 
   const handleTouch = useCallback(
@@ -367,7 +392,7 @@ function CompanionApp() {
         </Button>
       </header>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 min-w-0 pb-6">
+      <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
       <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
         {([
           ["chat", MessageCircle, "Chat"], ["avatar", Clapperboard, "Avatar"],
@@ -389,7 +414,7 @@ function CompanionApp() {
           protectedZonesEnabled={settings.protectedZonesEnabled}
           zones={settings.zones}
           cooldownMs={settings.boundaryCooldownMs}
-          showZones={showZones || calibrating}
+          showZones={showZones && !calibrating}
           onTouch={handleTouch}
         />
         {calibrating && activeTab === "settings" && settings.zones.map((zone, index) => (
@@ -456,16 +481,16 @@ function CompanionApp() {
           {AVATAR_STATES.map((state) => (
             <div key={state} className="rounded-xl border border-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <div>
+                <div className="min-w-0">
                   <p className="text-sm font-medium">{STATE_LABELS[state]}</p>
-                  <p className="text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
+                  <p className="break-all text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
                   <p className="text-[11px] text-muted-foreground">
                     {assetMeta[state]
                       ? `Loaded: ${assetMeta[state]?.name} (${Math.round((assetMeta[state]?.size ?? 0) / 1024)} KB)`
                       : sources[state] ? "Original clip included · ready" : "Missing — upload needed"}
                   </p>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex shrink-0 gap-1">
                   <Button variant="outline" size="sm" asChild>
                     <label className="cursor-pointer">
                       <Upload className="mr-1 h-3 w-3" />
@@ -505,8 +530,8 @@ function CompanionApp() {
             <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("THINKING", "test")}>
               Test thinking
             </Button>
-            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("TALKING", "test")}>
-              Test talking
+            <Button size="sm" variant="outline" onClick={() => settings.autoSpeak ? speak("Namaste! Main C2 hoon.", "hinglish") : toast.info("Enable spoken replies in Setup to test talking.")}>
+              Test voice & talking
             </Button>
             <Button size="sm" variant="outline" onClick={() => manager.current?.playTransient("UPSET", 6000, "test")}>
               Test upset
@@ -746,20 +771,21 @@ function CompanionApp() {
         </TabsContent>
         <TabsContent value="music" className="mt-3 space-y-3 px-3">
           <div className="flex gap-2">
-            <Input aria-label="Search songs" placeholder="Search songs…" value={musicQuery} onChange={e => setMusicQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void (async () => { setMusicBusy(true); try { const result = await searchSongs({ data: musicQuery }); setSongs(result.songs); setMusicError(result.error ?? ""); } catch { setMusicError("Search failed. Please try again."); } finally { setMusicBusy(false); } })(); }} />
-            <Button aria-label="Search" disabled={musicBusy || musicQuery.trim().length < 2} onClick={() => void (async () => { setMusicBusy(true); try { const result = await searchSongs({ data: musicQuery }); setSongs(result.songs); setMusicError(result.error ?? ""); } catch { setMusicError("Search failed. Please try again."); } finally { setMusicBusy(false); } })()}>{musicBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}</Button>
+            <Input aria-label="Search songs" placeholder="Search songs…" value={musicQuery} onChange={e => setMusicQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void findMusic(musicQuery); }} />
+            <Button aria-label="Search" disabled={musicBusy || musicQuery.trim().length < 2} onClick={() => void findMusic(musicQuery)}>{musicBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}</Button>
           </div>
           {musicError && <p role="status" className="text-xs text-destructive">{musicError}</p>}
           {songs.map(song => <div key={song.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2">
             <div className="min-w-0"><p className="truncate text-sm">{song.title}</p><p className="truncate text-xs text-muted-foreground">{song.artist}</p></div>
             <Button variant="outline" size="icon" title={playingSong === song.id && !musicPaused ? "Pause" : "Play"} aria-label={playingSong === song.id && !musicPaused ? "Pause" : "Play"} onClick={() => {
-              if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); return; }
+              if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); setMusicAutoplayNotice(true); return; }
               const command = musicPaused ? "playVideo" : "pauseVideo";
               iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: command, args: [] }), "https://www.youtube-nocookie.com");
               setMusicPaused(!musicPaused);
             }}>{playingSong === song.id && !musicPaused ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
           </div>)}
           {playingSong && <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />}
+          {musicAutoplayNotice && <p className="text-xs text-muted-foreground">If mobile playback doesn't start, tap Play inside the video.</p>}
           <p className="text-xs text-muted-foreground">Tap Play to start on mobile. Music pauses while C2 speaks. Availability depends on the video's playback permissions.</p>
         </TabsContent>
       </Tabs>
