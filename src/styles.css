@@ -99,6 +99,29 @@
   --sidebar-ring: oklch(0.704 0.04 256.788);
 }
 
+/* C2's dark navy surfaces remain readable regardless of system theme. */
+html:has(.c2-app) {
+  color-scheme: dark;
+  --background: oklch(0.18 0.025 255);
+  --surface-deep: oklch(0.18 0.025 255);
+  --foreground: oklch(0.96 0.015 250);
+  --card: oklch(0.205 0.028 260);
+  --card-foreground: oklch(0.96 0.015 250);
+  --popover: oklch(0.25 0.03 260);
+  --popover-foreground: oklch(0.96 0.015 250);
+  --primary: oklch(0.69 0.12 249);
+  --primary-foreground: oklch(0.15 0.025 260);
+  --secondary: oklch(0.26 0.03 260);
+  --secondary-foreground: oklch(0.96 0.015 250);
+  --muted: oklch(0.26 0.03 260);
+  --muted-foreground: oklch(0.73 0.025 250);
+  --accent: oklch(0.31 0.055 244);
+  --accent-foreground: oklch(0.96 0.015 250);
+  --border: oklch(0.32 0.04 256);
+  --input: oklch(0.32 0.04 256);
+  --ring: oklch(0.69 0.12 249);
+}
+
 .dark {
   --background: oklch(0.129 0.042 264.695);
   --surface-deep: oklch(0.1 0.03 270);

@@ -353,7 +353,7 @@ function CompanionApp() {
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
+    <div className="c2-app mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
       <Toaster />
       <header className="flex items-center justify-between px-4 py-3">
         <div>
