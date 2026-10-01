@@ -1,0 +1,6 @@
+- [ ] Blue mobile layout, top icon tabs, chat overlay
+- [ ] Video crossfade and muted safety
+- [ ] Protected zone calibration and boundary response
+- [ ] Music search/player with speech pause
+- [ ] Usage estimates and budget panel
+- [ ] Type/build and responsive verification
