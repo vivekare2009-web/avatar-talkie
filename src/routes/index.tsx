@@ -689,6 +689,11 @@ function CompanionApp() {
             />
           </div>
 
+          <Button variant="outline" size="sm" onClick={() => { setCalibrating(v => !v); setShowZones(false); }}>
+            {calibrating ? "Finish calibration" : "Calibrate zones on video"}
+          </Button>
+          {calibrating && <p className="text-xs text-muted-foreground">Drag a red zone on the video; adjust its size with the sliders below.</p>}
+
           {settings.zones.map((zone, index) => (
             <div key={zone.id} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between">
@@ -721,6 +726,14 @@ function CompanionApp() {
             </div>
           ))}
 
+          <div className="space-y-2 border-t border-border pt-4">
+            <h2 className="text-sm font-semibold">C2 usage · this device</h2>
+            <p className="text-xs text-muted-foreground">{requests} requests · approximately {estimatedTokens.toLocaleString()} text tokens this session. Estimates include visible text only; system instructions, memory and voice usage are not counted.</p>
+            <Label htmlFor="budget">Your monthly budget (USD, 0 = unset)</Label>
+            <Input id="budget" type="number" min="0" step="0.01" value={settings.monthlyBudget || 0} onChange={e => update({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-xs text-muted-foreground">Provider cost, budget used/remaining and Lovable workspace credits: unavailable. This budget is a reference only, not a spending limit.</p>
+          </div>
+
           <div className="rounded-lg border border-border p-3">
             <p className="mb-2 text-sm font-medium">Diagnostics</p>
             <div className="max-h-40 space-y-1 overflow-y-auto text-[11px] text-muted-foreground">
@@ -730,6 +743,24 @@ function CompanionApp() {
               ))}
             </div>
           </div>
+        </TabsContent>
+        <TabsContent value="music" className="mt-3 space-y-3 px-3">
+          <div className="flex gap-2">
+            <Input aria-label="Search songs" placeholder="Search songs…" value={musicQuery} onChange={e => setMusicQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void (async () => { setMusicBusy(true); try { const result = await searchSongs({ data: musicQuery }); setSongs(result.songs); setMusicError(result.error ?? ""); } catch { setMusicError("Search failed. Please try again."); } finally { setMusicBusy(false); } })(); }} />
+            <Button aria-label="Search" disabled={musicBusy || musicQuery.trim().length < 2} onClick={() => void (async () => { setMusicBusy(true); try { const result = await searchSongs({ data: musicQuery }); setSongs(result.songs); setMusicError(result.error ?? ""); } catch { setMusicError("Search failed. Please try again."); } finally { setMusicBusy(false); } })()}>{musicBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}</Button>
+          </div>
+          {musicError && <p role="status" className="text-xs text-destructive">{musicError}</p>}
+          {songs.map(song => <div key={song.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2">
+            <div className="min-w-0"><p className="truncate text-sm">{song.title}</p><p className="truncate text-xs text-muted-foreground">{song.artist}</p></div>
+            <Button variant="outline" size="icon" title={playingSong === song.id && !musicPaused ? "Pause" : "Play"} aria-label={playingSong === song.id && !musicPaused ? "Pause" : "Play"} onClick={() => {
+              if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); return; }
+              const command = musicPaused ? "playVideo" : "pauseVideo";
+              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: command, args: [] }), "https://www.youtube-nocookie.com");
+              setMusicPaused(!musicPaused);
+            }}>{playingSong === song.id && !musicPaused ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
+          </div>)}
+          {playingSong && <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />}
+          <p className="text-xs text-muted-foreground">Tap Play to start on mobile. Music pauses while C2 speaks. Availability depends on the video's playback permissions.</p>
         </TabsContent>
       </Tabs>
     </div>
