@@ -353,7 +353,7 @@ function CompanionApp() {
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-background text-foreground">
+    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
       <Toaster />
       <header className="flex items-center justify-between px-4 py-3">
         <div>
@@ -367,7 +367,17 @@ function CompanionApp() {
         </Button>
       </header>
 
-      <div className="relative mx-4 aspect-[9/16] overflow-hidden rounded-2xl border border-border shadow-lg">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 min-w-0 pb-6">
+      <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
+        {([
+          ["chat", MessageCircle, "Chat"], ["avatar", Clapperboard, "Avatar"],
+          ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["music", Music2, "Music"],
+        ] as const).map(([value, Icon, label]) => (
+          <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
+        ))}
+      </TabsList>
+
+      <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border bg-surface-deep shadow-lg">
         <AvatarVideoPlayer
           state={avatarState}
           sources={sources}
@@ -379,47 +389,43 @@ function CompanionApp() {
           protectedZonesEnabled={settings.protectedZonesEnabled}
           zones={settings.zones}
           cooldownMs={settings.boundaryCooldownMs}
-          showZones={showZones}
+          showZones={showZones || calibrating}
           onTouch={handleTouch}
         />
+        {calibrating && activeTab === "settings" && settings.zones.map((zone, index) => (
+          <div key={zone.id} className="absolute touch-none border-2 border-dashed border-destructive bg-destructive/30" style={{ left: `${zone.x}%`, top: `${zone.y}%`, width: `${zone.w}%`, height: `${zone.h}%` }}
+            onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); }}
+            onPointerMove={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+              const rect = event.currentTarget.parentElement?.getBoundingClientRect();
+              if (!rect) return;
+              const dx = event.movementX / rect.width * 100;
+              const dy = event.movementY / rect.height * 100;
+              update({ zones: settings.zones.map((item, i) => i === index ? { ...item, x: Math.max(0, Math.min(100 - item.w, item.x + dx)), y: Math.max(0, Math.min(100 - item.h, item.y + dy)) } : item) });
+            }}
+          ><span className="bg-destructive px-1 text-xs text-destructive-foreground">{zone.label} · drag</span></div>
+        ))}
+        {activeTab === "chat" && (
+          <div className="absolute inset-x-2 bottom-2 z-10 rounded-md border border-border bg-card/90 shadow-lg backdrop-blur-md">
+            <Button variant="ghost" className="h-8 w-full justify-between text-xs" onClick={() => setChatExpanded(v => !v)}>
+              <span>Conversation · {messages.length} messages</span>{chatExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+            </Button>
+            {chatExpanded && <div ref={scrollRef} className="max-h-32 space-y-2 overflow-y-auto border-t border-border p-2 text-xs">
+              {messages.length === 0 && <span className="text-muted-foreground">C2 se baat karo…</span>}
+              {messages.slice(-6).map(message => <p key={message.id} className={message.role === "user" ? "text-accent-foreground" : "text-foreground"}><strong>{message.role === "user" ? "You" : "C2"}: </strong>{message.content}</p>)}
+              {thinking && <p>C2 soch rahi hai…</p>}
+            </div>}
+          </div>
+        )}
       </div>
 
       {missingAssets.length > 0 && (
         <p className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-          {missingAssets.length} of 5 avatar clips are missing. Add them in the Avatar tab — nothing is simulated.
+          Missing clips: {missingAssets.map(state => EXPECTED_ASSET_FILENAMES[state]).join(", ")}
         </p>
       )}
 
-      <Tabs defaultValue="chat" className="mt-3 flex-1 px-4 pb-6">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="chat">Chat</TabsTrigger>
-          <TabsTrigger value="avatar">Avatar</TabsTrigger>
-          <TabsTrigger value="memory">Memory</TabsTrigger>
-          <TabsTrigger value="settings">Setup</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="chat" className="mt-3 space-y-3">
-          <div ref={scrollRef} className="h-64 space-y-2 overflow-y-auto rounded-xl border border-border p-3">
-            {messages.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                Kuch bhi likho — Hindi, Hinglish ya English. C2 usi language me reply karegi.
-              </p>
-            )}
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={
-                  message.role === "user"
-                    ? "ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground"
-                    : "w-fit max-w-[85%] rounded-2xl bg-card px-3 py-2 text-sm text-card-foreground"
-                }
-              >
-                {message.content}
-              </div>
-            ))}
-            {thinking && <p className="text-xs text-muted-foreground">C2 soch rahi hai…</p>}
-          </div>
-
+        <TabsContent value="chat" className="mt-3 space-y-3 px-3">
           <div className="flex items-end gap-2">
             <Textarea
               value={input}
@@ -432,7 +438,6 @@ function CompanionApp() {
               }}
               placeholder="Message C2…"
               className="min-h-11 resize-none"
-              autoFocus
             />
             <Button variant="outline" size="icon" onClick={startListening} disabled={listening} aria-label="Speak">
               <Mic className="h-4 w-4" />
@@ -447,7 +452,7 @@ function CompanionApp() {
           </p>
         </TabsContent>
 
-        <TabsContent value="avatar" className="mt-3 space-y-3">
+        <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
           {AVATAR_STATES.map((state) => (
             <div key={state} className="rounded-xl border border-border p-3">
               <div className="flex items-center justify-between gap-2">
@@ -457,7 +462,7 @@ function CompanionApp() {
                   <p className="text-[11px] text-muted-foreground">
                     {assetMeta[state]
                       ? `Loaded: ${assetMeta[state]?.name} (${Math.round((assetMeta[state]?.size ?? 0) / 1024)} KB)`
-                      : "Not uploaded yet"}
+                      : sources[state] ? "Original clip included · ready" : "Missing — upload needed"}
                   </p>
                 </div>
                 <div className="flex gap-1">
@@ -516,7 +521,7 @@ function CompanionApp() {
           </div>
         </TabsContent>
 
-        <TabsContent value="memory" className="mt-3 space-y-3">
+        <TabsContent value="memory" className="mt-3 space-y-3 px-3">
           <div className="flex gap-2">
             <Input placeholder="Key (e.g. city)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
             <Input placeholder="Value" value={newValue} onChange={(e) => setNewValue(e.target.value)} />
@@ -605,7 +610,7 @@ function CompanionApp() {
           </p>
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-3 space-y-4">
+        <TabsContent value="settings" className="mt-3 space-y-4 px-3">
           <div className="space-y-1">
             <Label>Your name</Label>
             <Input value={settings.displayName} onChange={(e) => update({ displayName: e.target.value })} />
