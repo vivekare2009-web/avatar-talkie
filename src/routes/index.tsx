@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Clapperboard, Brain, Music2, ChevronDown, ChevronUp, Play, Pause, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
@@ -33,6 +33,7 @@ import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } 
 import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
+import { searchSongs } from "@/lib/companion/music.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -77,6 +78,19 @@ function CompanionApp() {
   const [showZones, setShowZones] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle");
   const [listening, setListening] = useState(false);
+  const [activeTab, setActiveTab] = useState("chat");
+  const [chatExpanded, setChatExpanded] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [musicQuery, setMusicQuery] = useState("");
+  const [songs, setSongs] = useState<{ id: string; title: string; artist: string }[]>([]);
+  const [musicError, setMusicError] = useState("");
+  const [musicBusy, setMusicBusy] = useState(false);
+  const [playingSong, setPlayingSong] = useState<string | null>(null);
+  const [musicPaused, setMusicPaused] = useState(false);
+  const [requests, setRequests] = useState(0);
+  const [estimatedTokens, setEstimatedTokens] = useState(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
 
   const manager = useRef<AvatarVideoStateManager | null>(null);
   const voice = useRef<VoiceController | null>(null);
@@ -105,6 +119,7 @@ function CompanionApp() {
       unsubscribe();
       stateManager.dispose();
       voice.current?.dispose();
+      recognitionRef.current?.stop();
       voice.current = null;
       manager.current = null;
     };
@@ -164,6 +179,10 @@ function CompanionApp() {
         },
         {
           onStart: () => {
+            if (playingSong) {
+              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: "pauseVideo", args: [] }), "https://www.youtube-nocookie.com");
+              setMusicPaused(true);
+            }
             setVoiceStatus("speaking");
             stateManager?.setSustained("TALKING", "voice started");
           },
@@ -178,7 +197,7 @@ function CompanionApp() {
         },
       );
     },
-    [settings],
+    [settings, playingSong],
   );
 
   const handleSend = useCallback(
@@ -191,6 +210,8 @@ function CompanionApp() {
       setMessages(history);
       setInput("");
       setThinking(true);
+      setRequests((n) => n + 1);
+      setEstimatedTokens((n) => n + Math.ceil((text.length + history.slice(-12).reduce((a, m) => a + m.content.length, 0)) / 3));
       manager.current?.setSustained("THINKING", "generating reply");
       log(`language → ${resolved.language} (${resolved.reason})`);
 
@@ -209,6 +230,7 @@ function CompanionApp() {
           ...prev,
           { id: uid(), role: "assistant", content: reply.reply, language: reply.language },
         ]);
+        setEstimatedTokens((n) => n + Math.ceil(reply.reply.length / 3));
         if (reply.notice) toast.warning(reply.notice);
         if (reply.saved.length) {
           toast.success(`Saved to memory: ${reply.saved.map((s) => s.key).join(", ")}`);
@@ -230,7 +252,10 @@ function CompanionApp() {
   const handleTouch = useCallback(
     (result: TouchResult) => {
       if (result.triggeredBoundary) {
+        voice.current?.stop();
+        manager.current?.setSustained("IDLE", "boundary");
         manager.current?.playTransient("PERSONAL_BOUNDARY", 8000, "protected zone touched");
+        if (settings?.autoSpeak) speak("Arre, please thoda personal space do. Hum aaram se baat karte hain.", "hinglish");
         log(`boundary triggered by zone: ${result.zone?.label}`);
         return;
       }
@@ -240,7 +265,7 @@ function CompanionApp() {
       }
       log(`tap on ${result.zone ? result.zone.label : "open area"}`);
     },
-    [log],
+    [log, settings?.autoSpeak, speak],
   );
 
   const onTransientEnded = useCallback((state: AvatarState) => {
@@ -288,7 +313,10 @@ function CompanionApp() {
         onerror: (event: { error: string }) => void;
         onend: () => void;
         start: () => void;
+        stop: () => void;
       };
+      if (recognitionRef.current) return;
+      recognitionRef.current = recognition;
       recognition.lang = settings?.preferredLanguage === "en" ? "en-IN" : "hi-IN";
       recognition.interimResults = false;
       recognition.onresult = (event) => {
@@ -304,10 +332,11 @@ function CompanionApp() {
             : "The microphone stopped. Try again.",
         );
       };
-      recognition.onend = () => setListening(false);
+      recognition.onend = () => { setListening(false); recognitionRef.current = null; };
       setListening(true);
       recognition.start();
     } catch {
+      recognitionRef.current = null;
       setListening(false);
       toast.error("Could not start the microphone.");
     }
