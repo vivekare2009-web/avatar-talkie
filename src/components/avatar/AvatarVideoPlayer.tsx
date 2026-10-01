@@ -86,8 +86,8 @@ export function AvatarVideoPlayer({
       if (cancelled || token !== loadToken.current) return;
       cleanup();
       enforceMuted(target);
-      target!.loop = !isTransient(state);
-      const playPromise = target!.play();
+      target.loop = !isTransient(state);
+      const playPromise = target.play();
       const swap = () => {
         if (cancelled || token !== loadToken.current) return;
         currentSrc.current = src;
@@ -99,7 +99,7 @@ export function AvatarVideoPlayer({
           window.setTimeout(() => {
             if (token !== loadToken.current) return;
             showing.pause();
-          }, 220);
+          }, 150);
         }
       };
       if (playPromise && typeof playPromise.then === "function") {
@@ -133,6 +133,7 @@ export function AvatarVideoPlayer({
     return () => {
       cancelled = true;
       cleanup();
+      if (target !== showing && token !== loadToken.current) target.pause();
     };
     // visibleState intentionally excluded: it is set by this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -174,7 +175,7 @@ export function AvatarVideoPlayer({
           preload="auto"
           onEnded={handleEnded}
           className={cn(
-            "absolute inset-0 h-full w-full object-cover transition-opacity duration-200",
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-150",
             front === index ? "opacity-100" : "opacity-0",
           )}
         />
