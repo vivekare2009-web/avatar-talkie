@@ -37,6 +37,7 @@ export function AvatarVideoPlayer({
   const [front, setFront] = useState<0 | 1>(0);
   const frontRef = useRef<0 | 1>(0);
   const [visibleState, setVisibleState] = useState<AvatarState | null>(null);
+  const visibleStateRef = useRef<AvatarState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const loadToken = useRef(0);
@@ -53,8 +54,9 @@ export function AvatarVideoPlayer({
 
   useEffect(() => {
     const token = ++loadToken.current;
-    const target = front === 0 ? videoB.current : videoA.current;
-    const showing = front === 0 ? videoA.current : videoB.current;
+    const nextFront = frontRef.current === 0 ? 1 : 0;
+    const target = nextFront === 1 ? videoB.current : videoA.current;
+    const showing = nextFront === 1 ? videoA.current : videoB.current;
 
     enforceMuted(videoA.current);
     enforceMuted(videoB.current);
@@ -62,6 +64,7 @@ export function AvatarVideoPlayer({
     if (!src) {
       currentSrc.current = null;
       setVisibleState(null);
+      visibleStateRef.current = null;
       setLoading(false);
       if (showing) {
         showing.pause();
@@ -71,10 +74,11 @@ export function AvatarVideoPlayer({
       return;
     }
 
-    if (currentSrc.current === src && visibleState === state) return;
+    if (currentSrc.current === src && visibleStateRef.current === state) return;
     if (!target) return;
 
     let cancelled = false;
+    let pauseTimer: ReturnType<typeof setTimeout> | undefined;
     setLoading(true);
     setError(null);
 
@@ -95,12 +99,13 @@ export function AvatarVideoPlayer({
         if (cancelled || token !== loadToken.current) return;
         currentSrc.current = src;
         setVisibleState(state);
-        frontRef.current = front === 0 ? 1 : 0;
+        visibleStateRef.current = state;
+        frontRef.current = nextFront;
         setFront(frontRef.current);
         setLoading(false);
         log(`clip ready: ${state}`);
         if (showing) {
-          window.setTimeout(() => {
+          pauseTimer = window.setTimeout(() => {
             if (showing !== (frontRef.current === 0 ? videoA.current : videoB.current)) showing.pause();
           }, 150);
         }
@@ -136,11 +141,10 @@ export function AvatarVideoPlayer({
     return () => {
       cancelled = true;
       cleanup();
+      if (pauseTimer) window.clearTimeout(pauseTimer);
       if (target !== (frontRef.current === 0 ? videoA.current : videoB.current)) target.pause();
     };
-    // visibleState intentionally excluded: it is set by this effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, state, front, log]);
+  }, [src, state, log]);
 
   // Re-assert muting after any source change or browser interference.
   useEffect(() => {
@@ -163,11 +167,12 @@ export function AvatarVideoPlayer({
   }, []);
 
   const handleEnded = useCallback((index: number) => {
-    if (index === frontRef.current && isTransient(state)) onTransientEnded(state);
+    const playing = visibleStateRef.current;
+    if (index === frontRef.current && playing === state && isTransient(playing)) onTransientEnded(playing);
   }, [state, onTransientEnded]);
 
   return (
-    <div className={cn("relative h-full w-full overflow-hidden bg-surface-deep", className)}>
+    <div data-visible-state={visibleState} className={cn("relative h-full w-full overflow-hidden bg-surface-deep", className)}>
       {[videoA, videoB].map((ref, index) => (
         <video
           key={index}
