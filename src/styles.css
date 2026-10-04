@@ -99,26 +99,26 @@
   --sidebar-ring: oklch(0.704 0.04 256.788);
 }
 
-/* C2's dark navy surfaces remain readable regardless of system theme. */
-html:has(.c2-app) {
+/* C2 stays navy during loading, including before hydration. */
+:root, html:has(.c2-app) {
   color-scheme: dark;
-  --background: oklch(0.18 0.025 255);
-  --surface-deep: oklch(0.18 0.025 255);
+  --background: oklch(0.19488507 0.02911751 259.83742536);
+  --surface-deep: oklch(0.19488507 0.02911751 259.83742536);
   --foreground: oklch(0.96 0.015 250);
-  --card: oklch(0.205 0.028 260);
+  --card: oklch(0.20641830 0.03378006 265.53228903);
   --card-foreground: oklch(0.96 0.015 250);
-  --popover: oklch(0.25 0.03 260);
+  --popover: oklch(0.24361565 0.03523398 262.60887809);
   --popover-foreground: oklch(0.96 0.015 250);
   --primary: oklch(0.69 0.12 249);
   --primary-foreground: oklch(0.15 0.025 260);
-  --secondary: oklch(0.26 0.03 260);
+  --secondary: oklch(0.24361565 0.03523398 262.60887809);
   --secondary-foreground: oklch(0.96 0.015 250);
-  --muted: oklch(0.26 0.03 260);
+  --muted: oklch(0.24361565 0.03523398 262.60887809);
   --muted-foreground: oklch(0.73 0.025 250);
   --accent: oklch(0.31 0.055 244);
   --accent-foreground: oklch(0.96 0.015 250);
-  --border: oklch(0.32 0.04 256);
-  --input: oklch(0.32 0.04 256);
+  --border: oklch(0.32798798 0.04682508 260.86923133);
+  --input: oklch(0.32798798 0.04682508 260.86923133);
   --ring: oklch(0.69 0.12 249);
 }
 
@@ -166,5 +166,13 @@ html:has(.c2-app) {
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    letter-spacing: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .c2-app *, .c2-app *::before, .c2-app *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
 }

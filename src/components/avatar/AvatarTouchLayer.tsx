@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import type { TouchZone } from "@/lib/companion/settings";
+import { boundaryAllowed, touchedZone } from "@/lib/companion/behavior";
 import { cn } from "@/lib/utils";
 
 export type TouchResult = {
@@ -31,7 +32,7 @@ export function AvatarTouchLayer({
   showZones,
   onTouch,
 }: AvatarTouchLayerProps) {
-  const lastBoundaryAt = useRef(0);
+  const lastBoundaryAt = useRef<number | null>(null);
 
   const handlePointer = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -40,8 +41,7 @@ export function AvatarTouchLayer({
       const x = ((event.clientX - rect.left) / rect.width) * 100;
       const y = ((event.clientY - rect.top) / rect.height) * 100;
 
-      const zone =
-        zones.find((z) => x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) ?? null;
+      const zone = touchedZone(zones, x, y);
 
       const isProtected = Boolean(zone?.protected) && protectedZonesEnabled;
       if (!isProtected) {
@@ -50,7 +50,7 @@ export function AvatarTouchLayer({
       }
 
       const now = Date.now();
-      if (now - lastBoundaryAt.current < cooldownMs) {
+      if (!boundaryAllowed(zone, enabled, protectedZonesEnabled, now, lastBoundaryAt.current, cooldownMs)) {
         onTouch({ zone, blockedByCooldown: true, triggeredBoundary: false });
         return;
       }

@@ -4,6 +4,8 @@ import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCi
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
+import { ZoneCalibration } from "@/components/avatar/ZoneCalibration";
+import { clampZone, estimateBudget, songTitleFromRequest } from "@/lib/companion/behavior";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,7 +90,11 @@ function CompanionApp() {
   const [playingSong, setPlayingSong] = useState<string | null>(null);
   const [musicPaused, setMusicPaused] = useState(false);
   const [requests, setRequests] = useState(0);
-  const [estimatedTokens, setEstimatedTokens] = useState(0);
+  const [inputTokens, setInputTokens] = useState(0);
+  const [outputTokens, setOutputTokens] = useState(0);
+  const sendBusy = useRef(false);
+  const searchBusy = useRef(false);
+  const assetLoad = useRef(0);
   const [musicAutoplayNotice, setMusicAutoplayNotice] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const recognitionRef = useRef<{ stop: () => void } | null>(null);
@@ -128,20 +134,25 @@ function CompanionApp() {
 
   // Load stored avatar clips.
   const refreshAssets = useCallback(async () => {
-    revokeAssets.current();
+    const token = ++assetLoad.current;
     const library = await loadAssetLibrary();
+    if (token !== assetLoad.current) { library.revoke(); return; }
+    const previous = revokeAssets.current;
+    window.setTimeout(previous, 1000);
     revokeAssets.current = library.revoke;
     setSources({ ...BUNDLED_CLIPS, ...library.urls });
     setAssetMeta(library.meta);
   }, []);
 
   useEffect(() => {
-    void refreshAssets();
-    return () => revokeAssets.current();
+    void refreshAssets().catch(() => toast.error("Device clips could not load. Original clips are still available."));
+    return () => { assetLoad.current += 1; revokeAssets.current(); };
   }, [refreshAssets]);
 
   const refreshMemories = useCallback(async (ownerKey: string) => {
-    const result = await listMemories({ data: { ownerKey } });
+    let result;
+    try { result = await listMemories({ data: { ownerKey } }); }
+    catch { toast.error("Memories could not load. Please retry."); return; }
     if (!result.ok) {
       toast.error(result.error ?? "Could not load memories.");
       return;
@@ -160,7 +171,8 @@ function CompanionApp() {
   const update = useCallback((patch: Partial<CompanionSettings>) => {
     setSettings((prev) => {
       if (!prev) return prev;
-      const next = { ...prev, ...patch };
+      const next = { ...prev, ...patch, zones: (patch.zones ?? prev.zones).map(clampZone) };
+      if (patch.autoSpeak === false) { voice.current?.stop(); manager.current?.setSustained("IDLE", "voice muted"); setVoiceStatus("idle"); }
       saveSettings(next);
       return next;
     });
@@ -202,7 +214,8 @@ function CompanionApp() {
   );
 
   const findMusic = useCallback(async (query: string) => {
-    if (query.trim().length < 2 || musicBusy) return;
+    if (query.trim().length < 2 || searchBusy.current) return;
+    searchBusy.current = true;
     setMusicBusy(true);
     setMusicError("");
     setMusicQuery(query);
@@ -213,17 +226,19 @@ function CompanionApp() {
     } catch {
       setMusicError("Search failed. Please try again.");
     } finally {
+      searchBusy.current = false;
       setMusicBusy(false);
     }
-  }, [musicBusy]);
+  }, []);
 
   const handleSend = useCallback(
     async (raw?: string) => {
       const text = (raw ?? input).trim();
-      if (!text || !settings || thinking) return;
-      const songRequest = text.match(/(?:play\s+(.+)|(.+?)\s+(?:play\s+karo|bajao|chalao))/i);
+      if (!text || !settings || sendBusy.current) return;
+      const songRequest = songTitleFromRequest(text);
       if (songRequest) {
-        const title = (songRequest[1] ?? songRequest[2] ?? "").trim();
+        setMessages(prev => [...prev, { id: uid(), role: "user", content: text, language: detectLanguage(text).language }]);
+        const title = songRequest;
         setInput("");
         setActiveTab("music");
         void findMusic(title);
@@ -234,9 +249,12 @@ function CompanionApp() {
       const history = [...messages, userMessage];
       setMessages(history);
       setInput("");
+      sendBusy.current = true;
+      voice.current?.stop();
+      setVoiceStatus("idle");
       setThinking(true);
       setRequests((n) => n + 1);
-      setEstimatedTokens((n) => n + Math.ceil((text.length + history.slice(-12).reduce((a, m) => a + m.content.length, 0)) / 3));
+      setInputTokens((n) => n + Math.ceil(history.slice(-12).reduce((a, m) => a + m.content.length, 0) / 3));
       manager.current?.setSustained("THINKING", "generating reply");
       log(`language → ${resolved.language} (${resolved.reason})`);
 
@@ -247,7 +265,7 @@ function CompanionApp() {
             displayName: settings.displayName,
             language: resolved.language,
             messages: history.slice(-12).map((m) => ({ role: m.role, content: m.content })),
-            memories: memories.map((m) => ({ key: m.memory_key, value: m.memory_value })),
+            memories: memories.slice(0, 60).map((m) => ({ key: m.memory_key, value: m.memory_value })),
           },
         });
 
@@ -255,7 +273,7 @@ function CompanionApp() {
           ...prev,
           { id: uid(), role: "assistant", content: reply.reply, language: reply.language },
         ]);
-        setEstimatedTokens((n) => n + Math.ceil(reply.reply.length / 3));
+        setOutputTokens((n) => n + Math.ceil(reply.reply.length / 3));
         if (reply.notice) toast.warning(reply.notice);
         if (reply.saved.length) {
           toast.success(`Saved to memory: ${reply.saved.map((s) => s.key).join(", ")}`);
@@ -269,7 +287,7 @@ function CompanionApp() {
         setThinking(false);
         manager.current?.setSustained("IDLE", "chat failed");
         toast.error("C2 could not answer right now. Please try again.");
-      }
+      } finally { sendBusy.current = false; }
     },
     [input, settings, thinking, messages, memories, log, refreshMemories, speak, findMusic],
   );
@@ -304,10 +322,12 @@ function CompanionApp() {
         toast.error("Please choose a video file (.mp4).");
         return;
       }
-      await putAsset(state, file);
-      await refreshAssets();
-      toast.success(`${STATE_LABELS[state]} clip saved on this device.`);
-      log(`asset saved: ${state} (${file.name})`);
+      try {
+        await putAsset(state, file);
+        await refreshAssets();
+        toast.success(`${STATE_LABELS[state]} clip saved on this device.`);
+        log(`asset saved: ${state} (${file.name})`);
+      } catch { toast.error("This clip could not be saved. Check device storage and retry."); }
     },
     [refreshAssets, log],
   );
@@ -375,13 +395,14 @@ function CompanionApp() {
     );
   }
 
+  const budgetEstimate = estimateBudget(inputTokens, outputTokens, settings.inputTokenRate, settings.outputTokenRate, settings.monthlyBudget);
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
     <div className="c2-app mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
       <Toaster />
-      <header className="flex items-center justify-between px-4 py-3">
-        <div>
+      <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-3">
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold tracking-tight">C2</h1>
           <p className="text-xs text-muted-foreground">
             {STATE_LABELS[avatarState]} · voice {voiceStatus} · {languageLabel(detection.language)}
@@ -410,29 +431,17 @@ function CompanionApp() {
           onLog={log}
         />
         <AvatarTouchLayer
-          enabled={settings.touchEnabled}
+          enabled={settings.touchEnabled && !calibrating}
           protectedZonesEnabled={settings.protectedZonesEnabled}
           zones={settings.zones}
           cooldownMs={settings.boundaryCooldownMs}
           showZones={showZones && !calibrating}
           onTouch={handleTouch}
         />
-        {calibrating && activeTab === "settings" && settings.zones.map((zone, index) => (
-          <div key={zone.id} className="absolute touch-none border-2 border-dashed border-destructive bg-destructive/30" style={{ left: `${zone.x}%`, top: `${zone.y}%`, width: `${zone.w}%`, height: `${zone.h}%` }}
-            onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); }}
-            onPointerMove={(event) => {
-              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-              const rect = event.currentTarget.parentElement?.getBoundingClientRect();
-              if (!rect) return;
-              const dx = event.movementX / rect.width * 100;
-              const dy = event.movementY / rect.height * 100;
-              update({ zones: settings.zones.map((item, i) => i === index ? { ...item, x: Math.max(0, Math.min(100 - item.w, item.x + dx)), y: Math.max(0, Math.min(100 - item.h, item.y + dy)) } : item) });
-            }}
-          ><span className="bg-destructive px-1 text-xs text-destructive-foreground">{zone.label} · drag</span></div>
-        ))}
+        {calibrating && activeTab === "settings" && <ZoneCalibration zones={settings.zones} onChange={zones => update({ zones })} />}
         {activeTab === "chat" && (
           <div className="absolute inset-x-2 bottom-2 z-10 rounded-md border border-border bg-card/90 shadow-lg backdrop-blur-md">
-            <Button variant="ghost" className="h-8 w-full justify-between text-xs" onClick={() => setChatExpanded(v => !v)}>
+            <Button variant="ghost" className="h-8 w-full justify-between text-xs" aria-expanded={chatExpanded} onClick={() => setChatExpanded(v => !v)}>
               <span>Conversation · {messages.length} messages</span>{chatExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
             </Button>
             {chatExpanded && <div ref={scrollRef} className="max-h-32 space-y-2 overflow-y-auto border-t border-border p-2 text-xs">
@@ -464,10 +473,10 @@ function CompanionApp() {
               placeholder="Message C2…"
               className="min-h-11 resize-none"
             />
-            <Button variant="outline" size="icon" onClick={startListening} disabled={listening} aria-label="Speak">
+            <Button variant="outline" size="icon" className="shrink-0" onClick={() => listening ? recognitionRef.current?.stop() : startListening()} aria-label={listening ? "Stop listening" : "Speak"}>
               <Mic className="h-4 w-4" />
             </Button>
-            <Button size="icon" onClick={() => void handleSend()} disabled={thinking} aria-label="Send">
+            <Button size="icon" className="shrink-0" onClick={() => void handleSend()} disabled={thinking} aria-label="Send">
               {thinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </Button>
           </div>
@@ -479,7 +488,7 @@ function CompanionApp() {
 
         <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
           {AVATAR_STATES.map((state) => (
-            <div key={state} className="rounded-xl border border-border p-3">
+            <div key={state} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{STATE_LABELS[state]}</p>
@@ -492,9 +501,9 @@ function CompanionApp() {
                 </div>
                 <div className="flex shrink-0 gap-1">
                   <Button variant="outline" size="sm" asChild>
-                    <label className="cursor-pointer">
+                    <label className="cursor-pointer" aria-label={`Upload ${STATE_LABELS[state]} clip`} title={`Upload ${STATE_LABELS[state]} clip`}>
                       <Upload className="mr-1 h-3 w-3" />
-                      Upload
+                      <span className="hidden min-[390px]:inline">Upload</span>
                       <input
                         type="file"
                         accept="video/mp4,video/*"
@@ -508,17 +517,14 @@ function CompanionApp() {
                       variant="ghost"
                       size="sm"
                       onClick={async () => {
-                        await deleteAsset(state);
-                        await refreshAssets();
+                        try { await deleteAsset(state); await refreshAssets(); }
+                        catch { toast.error("The device clip could not be removed."); }
                       }}
                       aria-label="Remove clip"
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
                   )}
-                  <Button variant="secondary" size="sm" onClick={() => manager.current?.setSustained("IDLE", "test")}>
-                    Reset
-                  </Button>
                 </div>
               </div>
             </div>
@@ -556,9 +562,9 @@ function CompanionApp() {
               onClick={async () => {
                 if (!newKey.trim() || !newValue.trim()) return;
                 setMemoryBusy(true);
-                const result = await saveMemory({
-                  data: { ownerKey: settings.ownerKey, key: newKey.trim(), value: newValue.trim(), source: "manual", importance: 3 },
-                });
+                let result;
+                try { result = await saveMemory({ data: { ownerKey: settings.ownerKey, key: newKey.trim(), value: newValue.trim(), source: "manual", importance: 3 } }); }
+                catch { setMemoryBusy(false); toast.error("The memory was NOT saved. Please retry."); return; }
                 setMemoryBusy(false);
                 if (!result.ok) {
                   toast.error(result.error ?? "The memory was NOT saved.");
@@ -589,7 +595,9 @@ function CompanionApp() {
                   variant="ghost"
                   size="icon"
                   onClick={async () => {
-                    const result = await forgetMemory({ data: { ownerKey: settings.ownerKey, id: memory.id } });
+                    let result;
+                    try { result = await forgetMemory({ data: { ownerKey: settings.ownerKey, id: memory.id } }); }
+                    catch { toast.error("The memory was NOT deleted. Please retry."); return; }
                     if (!result.ok) {
                       toast.error(result.error ?? "The memory was NOT deleted.");
                       return;
@@ -617,7 +625,10 @@ function CompanionApp() {
               size="sm"
               variant="destructive"
               onClick={async () => {
-                const result = await clearMemories({ data: { ownerKey: settings.ownerKey } });
+                if (!window.confirm("Clear all memories for this device profile?")) return;
+                let result;
+                try { result = await clearMemories({ data: { ownerKey: settings.ownerKey } }); }
+                catch { toast.error("Memories were NOT cleared. Please retry."); return; }
                 if (!result.ok) {
                   toast.error(result.error ?? "Memories were NOT cleared.");
                   return;
@@ -631,7 +642,7 @@ function CompanionApp() {
           </div>
           <p className="text-[11px] text-muted-foreground">
             Memory test: save a fact, refresh the page, then ask C2 about it. Your memories are tied to this profile key
-            ({settings.ownerKey.slice(0, 12)}…) and are never mixed with another person's.
+            ({settings.ownerKey.slice(0, 12)}…). This is a device profile, not a signed-in account.
           </p>
         </TabsContent>
 
@@ -717,7 +728,6 @@ function CompanionApp() {
           <Button variant="outline" size="sm" onClick={() => { setCalibrating(v => !v); setShowZones(false); }}>
             {calibrating ? "Finish calibration" : "Calibrate zones on video"}
           </Button>
-          {calibrating && <p className="text-xs text-muted-foreground">Drag a red zone on the video; adjust its size with the sliders below.</p>}
 
           {settings.zones.map((zone, index) => (
             <div key={zone.id} className="rounded-lg border border-border p-3">
@@ -742,7 +752,7 @@ function CompanionApp() {
                     max={100}
                     step={1}
                     onValueChange={([value]) => {
-                      const zones = settings.zones.map((z, i) => (i === index ? { ...z, [axis]: value } : z));
+                      const zones = settings.zones.map((z, i) => (i === index ? { ...z, [axis]: value ?? z[axis] } : z));
                       update({ zones });
                     }}
                   />
@@ -753,10 +763,15 @@ function CompanionApp() {
 
           <div className="space-y-2 border-t border-border pt-4">
             <h2 className="text-sm font-semibold">C2 usage · this device</h2>
-            <p className="text-xs text-muted-foreground">{requests} requests · approximately {estimatedTokens.toLocaleString()} text tokens this session. Estimates include visible text only; system instructions, memory and voice usage are not counted.</p>
+            <p className="text-xs text-muted-foreground">{requests} requests · approximately {(inputTokens + outputTokens).toLocaleString()} text tokens this session. Estimates include visible text only; system instructions, memory and voice usage are not counted.</p>
             <Label htmlFor="budget">Your monthly budget (USD, 0 = unset)</Label>
             <Input id="budget" type="number" min="0" step="0.01" value={settings.monthlyBudget || 0} onChange={e => update({ monthlyBudget: Math.max(0, Number(e.target.value) || 0) })} />
-            <p className="text-xs text-muted-foreground">Provider cost, budget used/remaining and Lovable workspace credits: unavailable. This budget is a reference only, not a spending limit.</p>
+            <Label htmlFor="input-rate">Input rate (USD / 1M tokens, 0 = unknown)</Label>
+            <Input id="input-rate" type="number" min="0" step="0.01" value={settings.inputTokenRate} onChange={e => update({ inputTokenRate: Math.max(0, Number(e.target.value) || 0) })} />
+            <Label htmlFor="output-rate">Output rate (USD / 1M tokens, 0 = unknown)</Label>
+            <Input id="output-rate" type="number" min="0" step="0.01" value={settings.outputTokenRate} onChange={e => update({ outputTokenRate: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-xs text-muted-foreground">{budgetEstimate ? `Estimated text cost: $${budgetEstimate.used.toFixed(6)} · budget remaining: ${budgetEstimate.remaining === null ? "unset" : "$" + budgetEstimate.remaining.toFixed(6)}` : "Estimated text cost and budget remaining: unavailable until both token rates are entered."}</p>
+            <p className="text-xs text-muted-foreground">Based on your rates and this session only; excludes voice, memory and system instructions. Actual provider billing, quota and Lovable workspace credits: unavailable. This budget is not a spending limit.</p>
           </div>
 
           <div className="rounded-lg border border-border p-3">
@@ -778,16 +793,19 @@ function CompanionApp() {
           {songs.map(song => <div key={song.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2">
             <div className="min-w-0"><p className="truncate text-sm">{song.title}</p><p className="truncate text-xs text-muted-foreground">{song.artist}</p></div>
             <Button variant="outline" size="icon" title={playingSong === song.id && !musicPaused ? "Pause" : "Play"} aria-label={playingSong === song.id && !musicPaused ? "Pause" : "Play"} onClick={() => {
+              if (voice.current?.isSpeaking) { toast.info("Wait for C2 to finish speaking."); return; }
               if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); setMusicAutoplayNotice(true); return; }
               const command = musicPaused ? "playVideo" : "pauseVideo";
               iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: command, args: [] }), "https://www.youtube-nocookie.com");
               setMusicPaused(!musicPaused);
             }}>{playingSong === song.id && !musicPaused ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
           </div>)}
-          {playingSong && <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />}
           {musicAutoplayNotice && <p className="text-xs text-muted-foreground">If mobile playback doesn't start, tap Play inside the video.</p>}
           <p className="text-xs text-muted-foreground">Tap Play to start on mobile. Music pauses while C2 speaks. Availability depends on the video's playback permissions.</p>
         </TabsContent>
+        {playingSong && <div className={activeTab === "music" ? "mx-3 mt-3" : "hidden"}>
+          <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />
+        </div>}
       </Tabs>
     </div>
   );

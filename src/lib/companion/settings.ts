@@ -1,4 +1,5 @@
 import type { PreferredLanguage } from "./language";
+import { clampZone } from "./behavior";
 
 export type TouchZone = {
   id: string;
@@ -26,13 +27,15 @@ export type CompanionSettings = {
   boundaryCooldownMs: number;
   zones: TouchZone[];
   monthlyBudget: number;
+  inputTokenRate: number;
+  outputTokenRate: number;
 };
 
 const KEY = "c2.settings.v2";
 
 export const DEFAULT_ZONES: TouchZone[] = [
-  { id: "chest", label: "Chest", x: 34, y: 36, w: 32, h: 12, protected: true },
-  { id: "waist", label: "Hip / waist", x: 31, y: 59, w: 38, h: 13, protected: true },
+  { id: "chest", label: "Chest", x: 37, y: 28, w: 26, h: 10, protected: true },
+  { id: "waist", label: "Hip / waist", x: 36, y: 43, w: 28, h: 9, protected: true },
 ];
 
 export function createOwnerKey() {
@@ -58,6 +61,8 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   boundaryCooldownMs: 8000,
   zones: DEFAULT_ZONES,
   monthlyBudget: 0,
+  inputTokenRate: 0,
+  outputTokenRate: 0,
 };
 
 export function loadSettings(): CompanionSettings {
@@ -72,7 +77,7 @@ export function loadSettings(): CompanionSettings {
   const merged: CompanionSettings = {
     ...DEFAULT_SETTINGS,
     ...parsed,
-    zones: Array.isArray(parsed.zones) && parsed.zones.length ? parsed.zones : DEFAULT_ZONES,
+    zones: (Array.isArray(parsed.zones) && parsed.zones.length ? parsed.zones.filter(zone => zone && zone.id !== "head") : DEFAULT_ZONES).map(clampZone),
   };
   if (!merged.ownerKey) merged.ownerKey = createOwnerKey();
   return merged;

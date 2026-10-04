@@ -1,6 +1,6 @@
-- [ ] Blue mobile layout, top icon tabs, chat overlay
-- [ ] Video crossfade and muted safety
-- [ ] Protected zone calibration and boundary response
-- [ ] Music search/player with speech pause
-- [ ] Usage estimates and budget panel
-- [ ] Type/build and responsive verification
+- [x] Exact navy mobile surfaces, top icon tabs, collapsible video chat
+- [x] Video load tokens, stable double buffer and permanent mute
+- [x] Chest/waist calibration with drag and resize handles, cooldown boundary
+- [x] Real song search, persistent player and speech pause
+- [x] Usage and user-entered rate/budget estimates with unavailable billing labels
+- [ ] Regression tests and phone-width verification
