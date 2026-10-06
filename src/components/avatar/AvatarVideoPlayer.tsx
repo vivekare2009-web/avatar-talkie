@@ -78,7 +78,7 @@ export function AvatarVideoPlayer({
     if (!target) return;
 
     let cancelled = false;
-    let pauseTimer: ReturnType<typeof setTimeout> | undefined;
+    let pauseTimer: number | undefined;
     setLoading(true);
     setError(null);
 
