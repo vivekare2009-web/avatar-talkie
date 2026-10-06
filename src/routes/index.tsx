@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Clapperboard, Brain, Music2, ChevronDown, ChevronUp, Play, Pause, Search } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Clapperboard, Brain, Globe, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
 import { ZoneCalibration } from "@/components/avatar/ZoneCalibration";
-import { clampZone, estimateBudget, songTitleFromRequest } from "@/lib/companion/behavior";
+import { clampZone, estimateBudget } from "@/lib/companion/behavior";
+import { InAppBrowser, type BrowserHandle } from "@/components/browser/InAppBrowser";
+import { looksLikeCommand, shouldGreet } from "@/lib/companion/browser";
+import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +38,6 @@ import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } 
 import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
-import { searchSongs } from "@/lib/companion/music.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -83,20 +85,15 @@ function CompanionApp() {
   const [activeTab, setActiveTab] = useState("chat");
   const [chatExpanded, setChatExpanded] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
-  const [musicQuery, setMusicQuery] = useState("");
-  const [songs, setSongs] = useState<{ id: string; title: string; artist: string }[]>([]);
-  const [musicError, setMusicError] = useState("");
-  const [musicBusy, setMusicBusy] = useState(false);
-  const [playingSong, setPlayingSong] = useState<string | null>(null);
-  const [musicPaused, setMusicPaused] = useState(false);
+  const [commandStatus, setCommandStatus] = useState("");
   const [requests, setRequests] = useState(0);
   const [inputTokens, setInputTokens] = useState(0);
   const [outputTokens, setOutputTokens] = useState(0);
   const sendBusy = useRef(false);
   const searchBusy = useRef(false);
   const assetLoad = useRef(0);
-  const [musicAutoplayNotice, setMusicAutoplayNotice] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const browserRef = useRef<BrowserHandle | null>(null);
+  const greeted = useRef(false);
   const recognitionRef = useRef<{ stop: () => void } | null>(null);
 
   const manager = useRef<AvatarVideoStateManager | null>(null);
@@ -192,10 +189,7 @@ function CompanionApp() {
         },
         {
           onStart: () => {
-            if (playingSong) {
-              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: "pauseVideo", args: [] }), "https://www.youtube-nocookie.com");
-              setMusicPaused(true);
-            }
+            browserRef.current?.pauseMedia();
             setVoiceStatus("speaking");
             stateManager?.setSustained("TALKING", "voice started");
           },
@@ -210,39 +204,43 @@ function CompanionApp() {
         },
       );
     },
-    [settings, playingSong],
+    [settings],
   );
 
-  const findMusic = useCallback(async (query: string) => {
-    if (query.trim().length < 2 || searchBusy.current) return;
-    searchBusy.current = true;
-    setMusicBusy(true);
-    setMusicError("");
-    setMusicQuery(query);
+  const runCommand = useCallback(async (text: string) => {
+    setActiveTab("browser");
+    setCommandStatus("Understanding…");
     try {
-      const result = await searchSongs({ data: query });
-      setSongs(result.songs);
-      setMusicError(result.error ?? "");
+      const result = await classifyCommand({ data: text });
+      if (result.notice) log(`command: ${result.notice}`);
+      if (!result.actions.length) { setCommandStatus("Blocked · command samajh nahi aaya"); return false; }
+      let last = "";
+      for (const action of result.actions) {
+        const handle = browserRef.current;
+        if (!handle) { setCommandStatus("Failed · browser not ready"); return true; }
+        const outcome = await handle.run(action, (step) => setCommandStatus(`${step}…`));
+        last = outcome.message;
+        log(`command ${action.type}: ${outcome.status} — ${outcome.message}`);
+        setCommandStatus(`${outcome.status === "completed" ? "Completed" : outcome.status === "playing" ? "Playing" : outcome.status === "blocked" ? "Blocked" : "Failed"} · ${outcome.message}`);
+        if (outcome.status === "failed") break;
+      }
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: last, language: "en" }]);
+      return true;
     } catch {
-      setMusicError("Search failed. Please try again.");
-    } finally {
-      searchBusy.current = false;
-      setMusicBusy(false);
+      setCommandStatus("Failed · command error");
+      return true;
     }
-  }, []);
+  }, [log]);
 
   const handleSend = useCallback(
     async (raw?: string) => {
       const text = (raw ?? input).trim();
       if (!text || !settings || sendBusy.current) return;
-      const songRequest = songTitleFromRequest(text);
-      if (songRequest) {
+      if (looksLikeCommand(text)) {
         setMessages(prev => [...prev, { id: uid(), role: "user", content: text, language: detectLanguage(text).language }]);
-        const title = songRequest;
         setInput("");
-        setActiveTab("music");
-        void findMusic(title);
-        return;
+        sendBusy.current = true;
+        try { if (await runCommand(text)) return; } finally { sendBusy.current = false; }
       }
       const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
       const userMessage: ChatMessage = { id: uid(), role: "user", content: text, language: resolved.language };
@@ -289,7 +287,7 @@ function CompanionApp() {
         toast.error("C2 could not answer right now. Please try again.");
       } finally { sendBusy.current = false; }
     },
-    [input, settings, thinking, messages, memories, log, refreshMemories, speak, findMusic],
+    [input, settings, thinking, messages, memories, log, refreshMemories, speak, runCommand],
   );
 
   const handleTouch = useCallback(
@@ -340,6 +338,24 @@ function CompanionApp() {
     () => detectLanguage(input.trim() ? input : lastUserText),
     [input, lastUserText],
   );
+
+  // Greet once per genuine session start/resume (30 min inactivity), not on every refresh.
+  useEffect(() => {
+    if (!settings || greeted.current) return;
+    greeted.current = true;
+    const key = "c2.lastActive";
+    const last = Number(localStorage.getItem(key)) || null;
+    if (shouldGreet(Date.now(), last)) {
+      const name = settings.displayName || "Master";
+      const text = `Hello ${name}, kaise ho? Kaisa gaya aaj ka din?`;
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: text, language: "hinglish" }]);
+      speak(text, "hinglish");
+    }
+    const touch = () => localStorage.setItem(key, String(Date.now()));
+    touch();
+    const id = window.setInterval(touch, 60_000);
+    return () => window.clearInterval(id);
+  }, [settings, speak]);
 
   const startListening = useCallback(() => {
     const SpeechRecognition =
@@ -412,12 +428,13 @@ function CompanionApp() {
           <SettingsIcon className="h-5 w-5" />
         </Button>
       </header>
+      {commandStatus && <p role="status" className="mx-3 mb-2 truncate rounded bg-card px-2 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
       <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
         {([
           ["chat", MessageCircle, "Chat"], ["avatar", Clapperboard, "Avatar"],
-          ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["music", Music2, "Music"],
+          ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
         ] as const).map(([value, Icon, label]) => (
           <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
         ))}
@@ -784,28 +801,9 @@ function CompanionApp() {
             </div>
           </div>
         </TabsContent>
-        <TabsContent value="music" className="mt-3 space-y-3 px-3">
-          <div className="flex gap-2">
-            <Input aria-label="Search songs" placeholder="Search songs…" value={musicQuery} onChange={e => setMusicQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void findMusic(musicQuery); }} />
-            <Button aria-label="Search" disabled={musicBusy || musicQuery.trim().length < 2} onClick={() => void findMusic(musicQuery)}>{musicBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}</Button>
-          </div>
-          {musicError && <p role="status" className="text-xs text-destructive">{musicError}</p>}
-          {songs.map(song => <div key={song.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border py-2">
-            <div className="min-w-0"><p className="truncate text-sm">{song.title}</p><p className="truncate text-xs text-muted-foreground">{song.artist}</p></div>
-            <Button variant="outline" size="icon" title={playingSong === song.id && !musicPaused ? "Pause" : "Play"} aria-label={playingSong === song.id && !musicPaused ? "Pause" : "Play"} onClick={() => {
-              if (voice.current?.isSpeaking) { toast.info("Wait for C2 to finish speaking."); return; }
-              if (playingSong !== song.id) { setPlayingSong(song.id); setMusicPaused(false); setMusicAutoplayNotice(true); return; }
-              const command = musicPaused ? "playVideo" : "pauseVideo";
-              iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: command, args: [] }), "https://www.youtube-nocookie.com");
-              setMusicPaused(!musicPaused);
-            }}>{playingSong === song.id && !musicPaused ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
-          </div>)}
-          {musicAutoplayNotice && <p className="text-xs text-muted-foreground">If mobile playback doesn't start, tap Play inside the video.</p>}
-          <p className="text-xs text-muted-foreground">Tap Play to start on mobile. Music pauses while C2 speaks. Availability depends on the video's playback permissions.</p>
-        </TabsContent>
-        {playingSong && <div className={activeTab === "music" ? "mx-3 mt-3" : "hidden"}>
-          <iframe ref={iframeRef} title="Music player" className="aspect-video w-full border border-border" allow="autoplay; encrypted-media; picture-in-picture" src={`https://www.youtube-nocookie.com/embed/${playingSong}?enablejsapi=1&autoplay=1&origin=${encodeURIComponent(typeof window === "undefined" ? "" : window.location.origin)}`} />
-        </div>}
+        <div className={activeTab === "browser" ? "mx-3 mt-3 h-[70vh] overflow-hidden rounded-md border border-border" : "hidden"}>
+          <InAppBrowser ref={browserRef} onLog={log} />
+        </div>
       </Tabs>
     </div>
   );
