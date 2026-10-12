@@ -1,6 +1,10 @@
 - [x] Exact navy mobile surfaces, top icon tabs, collapsible video chat
 - [x] Video load tokens, stable double buffer and permanent mute
 - [x] Chest/waist calibration with drag and resize handles, cooldown boundary
-- [x] Real song search, persistent player and speech pause
+- [x] In-app browser, shared typed/voice command routing, honest media outcomes
 - [x] Usage and user-entered rate/budget estimates with unavailable billing labels
-- [ ] Regression tests and phone-width verification
+- [ ] Add 3D Model Studio for ZIP, GLB, GLTF and FBX imports with validation and persistence
+- [ ] Render imported models with mobile orbit, pan, zoom, camera presets and reset
+- [ ] Gate chat on memory readiness and add backend/load/last-operation diagnostics
+- [ ] Harden THINKING/command/voice failure recovery and session greeting cleanup
+- [ ] Regression tests, typecheck/build, and 320/390/430px verification
