@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Clapperboard, Brain, Globe, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
@@ -10,6 +10,7 @@ import { InAppBrowser, type BrowserHandle } from "@/components/browser/InAppBrow
 import { looksLikeCommand, shouldGreet } from "@/lib/companion/browser";
 import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
+import { ModelStudioViewer } from "@/components/avatar/ModelStudioViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,6 +39,7 @@ import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } 
 import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
+import { clearModelPackages, inspectModelUpload, loadLatestModelPackage, saveModelPackage, summarizeModelPackage, type ModelPackage } from "@/lib/companion/modelPackage";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -76,6 +78,12 @@ function CompanionApp() {
   const [assetMeta, setAssetMeta] = useState<Partial<Record<AvatarState, AssetMeta>>>({});
   const [memories, setMemories] = useState<MemoryRow[]>([]);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryReady, setMemoryReady] = useState(false);
+  const [memoryStatus, setMemoryStatus] = useState("Waiting for backend");
+  const [memoryLastOperation, setMemoryLastOperation] = useState("None yet");
+  const [modelPackage, setModelPackage] = useState<ModelPackage | null>(null);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
@@ -143,18 +151,26 @@ function CompanionApp() {
 
   useEffect(() => {
     void refreshAssets().catch(() => toast.error("Device clips could not load. Original clips are still available."));
+    void loadLatestModelPackage().then(setModelPackage).catch(() => setModelError("Saved 3D model could not be restored."));
     return () => { assetLoad.current += 1; revokeAssets.current(); };
   }, [refreshAssets]);
 
   const refreshMemories = useCallback(async (ownerKey: string) => {
+    setMemoryReady(false);
+    setMemoryStatus("Loading from backend");
     let result;
     try { result = await listMemories({ data: { ownerKey } }); }
-    catch { toast.error("Memories could not load. Please retry."); return; }
+    catch { setMemoryStatus("Backend unavailable"); setMemoryLastOperation("Load failed"); toast.error("Memories could not load. Please retry."); return; }
     if (!result.ok) {
+      setMemoryStatus("Backend error");
+      setMemoryLastOperation("Load failed");
       toast.error(result.error ?? "Could not load memories.");
       return;
     }
     setMemories(result.data ?? []);
+    setMemoryReady(true);
+    setMemoryStatus("Backend connected");
+    setMemoryLastOperation(`Loaded ${result.data?.length ?? 0} memories`);
   }, []);
 
   useEffect(() => {
@@ -236,6 +252,7 @@ function CompanionApp() {
     async (raw?: string) => {
       const text = (raw ?? input).trim();
       if (!text || !settings || sendBusy.current) return;
+      if (!memoryReady) { toast.info("C2 is still loading your memories. Please wait a moment."); return; }
       if (looksLikeCommand(text)) {
         setMessages(prev => [...prev, { id: uid(), role: "user", content: text, language: detectLanguage(text).language }]);
         setInput("");
@@ -287,7 +304,7 @@ function CompanionApp() {
         toast.error("C2 could not answer right now. Please try again.");
       } finally { sendBusy.current = false; }
     },
-    [input, settings, thinking, messages, memories, log, refreshMemories, speak, runCommand],
+    [input, settings, thinking, messages, memories, memoryReady, log, refreshMemories, speak, runCommand],
   );
 
   const handleTouch = useCallback(
@@ -433,7 +450,7 @@ function CompanionApp() {
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
       <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
         {([
-          ["chat", MessageCircle, "Chat"], ["avatar", Clapperboard, "Avatar"],
+          ["chat", MessageCircle, "Chat"], ["avatar", Box, "Studio"],
           ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
         ] as const).map(([value, Icon, label]) => (
           <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
@@ -441,12 +458,7 @@ function CompanionApp() {
       </TabsList>
 
       <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border bg-surface-deep shadow-lg">
-        <AvatarVideoPlayer
-          state={avatarState}
-          sources={sources}
-          onTransientEnded={onTransientEnded}
-          onLog={log}
-        />
+        {modelPackage ? <ModelStudioViewer model={modelPackage} state={avatarState} onError={message => { setModelError(message); log(`3D model: ${message}`); }} /> : <AvatarVideoPlayer state={avatarState} sources={sources} onTransientEnded={onTransientEnded} onLog={log} />}
         <AvatarTouchLayer
           enabled={settings.touchEnabled && !calibrating}
           protectedZonesEnabled={settings.protectedZonesEnabled}
@@ -504,6 +516,14 @@ function CompanionApp() {
         </TabsContent>
 
         <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
+          <div className="rounded-lg border border-border bg-card p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div><h2 className="text-sm font-semibold">3D Model Studio</h2><p className="mt-1 text-[11px] text-muted-foreground">GLB, embedded GLTF, FBX, or ZIP containing one of them plus textures. A ZIP containing only .blend cannot render in a browser.</p></div>
+              <Button size="sm" asChild disabled={modelBusy}><label className="cursor-pointer"><Upload className="h-3 w-3" />Import<input type="file" className="hidden" accept=".zip,.glb,.gltf,.fbx" onChange={async event => { const file = event.target.files?.[0]; if (!file) return; setModelBusy(true); setModelError(null); try { const parsed = await inspectModelUpload(file); await clearModelPackages(); await saveModelPackage(parsed); setModelPackage(parsed); toast.success(`${parsed.format.toUpperCase()} character imported.`); } catch (error) { const message = error instanceof Error ? error.message : "Model import failed."; setModelError(message); toast.error(message); } finally { setModelBusy(false); event.target.value = ""; } }} /></label></Button>
+            </div>
+            {modelPackage && <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground"><span>{summarizeModelPackage(modelPackage).name} · {modelPackage.format.toUpperCase()} · {modelPackage.files.length} file(s)</span><Button size="sm" variant="ghost" onClick={async () => { await clearModelPackages(); setModelPackage(null); setModelError(null); }}>Use videos</Button></div>}
+            {modelError && <p role="alert" className="mt-2 text-xs text-destructive">{modelError} Muted avatar videos remain available as fallback.</p>}
+          </div>
           {AVATAR_STATES.map((state) => (
             <div key={state} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between gap-2">
@@ -570,6 +590,7 @@ function CompanionApp() {
         </TabsContent>
 
         <TabsContent value="memory" className="mt-3 space-y-3 px-3">
+          <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-card p-3 text-center text-[10px]"><div><span className="block text-muted-foreground">Backend</span>{memoryStatus}</div><div><span className="block text-muted-foreground">Loaded</span>{memories.length}</div><div><span className="block text-muted-foreground">Last operation</span>{memoryLastOperation}</div></div>
           <div className="flex gap-2">
             <Input placeholder="Key (e.g. city)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
             <Input placeholder="Value" value={newValue} onChange={(e) => setNewValue(e.target.value)} />

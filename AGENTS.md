@@ -13,3 +13,4 @@
 - Keep video visibility owned by the double-buffer player, with source-load tokens and a front ref; state changes must not replace a visible frame before the next clip is ready.
 - Use TanStack Start server functions for internal companion calls; preserve the current memory store while updating presentation.
 - Treat entered token rates as estimates for visible text only; never present these as provider billing or workspace credits.
+- Store imported character packages in browser IndexedDB and render validated GLB/GLTF/FBX with React Three Fiber; keep muted state videos as the failure fallback so a bad model cannot break C2.
