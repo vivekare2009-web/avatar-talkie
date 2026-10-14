@@ -1,164 +1,139 @@
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, OrbitControls } from "@react-three/drei";
-import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-
+import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
-import type { AvatarState } from "@/lib/companion/avatarStates";
 import type { ModelPackage } from "@/lib/companion/modelPackage";
+import { animationForState, cameraLimits, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
+import { disposeCharacter, loadCharacter, type LoadedCharacter } from "@/lib/companion/modelRuntime";
 
-type CameraPreset = "front" | "side" | "back" | "three-quarter" | "close-up" | "full-body";
-type LoadedModel = { object: THREE.Group; clips: THREE.AnimationClip[]; height: number };
-
-const PRESETS: Record<CameraPreset, { azimuth: number; polar: number; distance: number }> = {
-  front: { azimuth: 0, polar: 82, distance: 4.4 },
-  side: { azimuth: 90, polar: 82, distance: 4.4 },
-  back: { azimuth: 180, polar: 82, distance: 4.4 },
-  "three-quarter": { azimuth: 38, polar: 78, distance: 4.1 },
-  "close-up": { azimuth: 15, polar: 76, distance: 2.5 },
-  "full-body": { azimuth: 0, polar: 80, distance: 5.2 },
-};
-
-function normalizedPath(path: string) {
-  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+export type CameraPreset = "front" | "side" | "three-quarter";
+class RenderBoundary extends Component<{ children: ReactNode; onError: (message: string) => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error: Error) { this.props.onError(`3D rendering failed: ${error.message}`); }
+  render() { return this.state.failed ? null : this.props.children; }
 }
-
-function buildUrls(model: ModelPackage) {
-  const entries = model.files.map((file) => [normalizedPath(file.path), URL.createObjectURL(file.blob)] as const);
-  const urls = new Map(entries);
-  const byName = new Map(entries.map(([path, url]) => [path.split("/").pop() ?? path, url]));
-  return {
-    main: urls.get(normalizedPath(model.mainPath)),
-    resolve: (requested: string) => {
-      const decoded = decodeURIComponent(requested).replace(/^blob:[^/]+\//, "");
-      const clean = normalizedPath(decoded);
-      return urls.get(clean) ?? byName.get(clean.split("/").pop() ?? clean) ?? requested;
-    },
-    revoke: () => entries.forEach(([, url]) => URL.revokeObjectURL(url)),
-  };
-}
-
-async function loadModel(model: ModelPackage, onProgress: (value: number) => void): Promise<LoadedModel> {
-  const packageUrls = buildUrls(model);
-  if (!packageUrls.main) throw new Error("The main model file is missing from this package.");
-  const manager = new THREE.LoadingManager();
-  manager.setURLModifier(packageUrls.resolve);
-  manager.onProgress = (_url, loaded, total) => onProgress(total ? Math.round((loaded / total) * 100) : 0);
-  try {
-    const loaded = model.format === "fbx"
-      ? await new FBXLoader(manager).loadAsync(packageUrls.main, (event) => onProgress(event.total ? Math.round((event.loaded / event.total) * 100) : 25))
-      : await new GLTFLoader(manager).loadAsync(packageUrls.main, (event) => onProgress(event.total ? Math.round((event.loaded / event.total) * 100) : 25));
-    const object = model.format === "fbx" ? loaded as THREE.Group : (loaded as { scene: THREE.Group }).scene;
-    const clips = model.format === "fbx" ? object.animations : (loaded as { animations: THREE.AnimationClip[] }).animations;
-    object.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
-      }
-    });
-    const box = new THREE.Box3().setFromObject(object);
-    const size = box.getSize(new THREE.Vector3());
-    const scale = 2.8 / Math.max(size.y, 0.001);
-    object.scale.setScalar(scale);
-    const scaled = new THREE.Box3().setFromObject(object);
-    const center = scaled.getCenter(new THREE.Vector3());
-    object.position.set(-center.x, -scaled.min.y - 1.4, -center.z);
-    onProgress(100);
-    return { object, clips, height: 2.8 };
-  } finally {
-    window.setTimeout(packageUrls.revoke, 3000);
-  }
-}
-
-function Character({ loaded, state }: { loaded: LoadedModel; state: AvatarState }) {
+function Character({ loaded, state, appearance, onError }: { loaded: LoadedCharacter; state: ModelState; appearance: ModelAppearance; onError: (message: string) => void }) {
   const root = useRef<THREE.Group>(null);
   const mixer = useMemo(() => new THREE.AnimationMixer(loaded.object), [loaded.object]);
-  const hasAnimation = loaded.clips.length > 0;
+  const name = animationForState(loaded.clips.map(clip => clip.name), state);
+  const failed = useRef(false);
+  const reduced = useRef(false);
   useEffect(() => {
-    if (!hasAnimation) return;
-    const expressions: Record<AvatarState, RegExp> = {
-      IDLE: /idle|breath|stand/i,
-      THINKING: /think|idle|stand/i,
-      TALKING: /talk|speak|idle/i,
-      UPSET: /upset|angry|sad|idle/i,
-      PERSONAL_BOUNDARY: /boundary|back|upset|angry|idle/i,
-    };
-    const clip = loaded.clips.find((item) => expressions[state].test(item.name)) ?? loaded.clips[0];
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reduced.current = media.matches;
+    const change = () => { reduced.current = media.matches; };
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
+    const clip = loaded.clips.find(item => item.name === name);
     if (!clip) return;
-    mixer.stopAllAction();
-    const action = mixer.clipAction(clip).reset().fadeIn(0.2).play();
-    return () => { action.fadeOut(0.15); };
-  }, [hasAnimation, loaded.clips, mixer, state]);
-  useEffect(() => () => mixer.stopAllAction(), [mixer]);
-  useFrame(({ clock }, delta) => {
-    mixer.update(Math.min(delta, 0.05));
-    if (!root.current || hasAnimation) return;
-    const t = clock.getElapsedTime();
-    root.current.position.y = Math.sin(t * 1.4) * 0.012;
-    root.current.rotation.y = state === "THINKING" ? Math.sin(t * 0.7) * 0.04 : Math.sin(t * 0.28) * 0.018;
+    try {
+      const action = mixer.clipAction(clip).reset().fadeIn(0.25).play();
+      return () => { action.fadeOut(0.25); };
+    } catch { mixer.stopAllAction(); }
+  }, [loaded, mixer, name]);
+  useEffect(() => () => { mixer.stopAllAction(); mixer.uncacheRoot(loaded.object); }, [loaded, mixer]);
+  useFrame(({ clock }, rawDelta) => {
+    if (!root.current) return;
+    try {
+      if (!failed.current) mixer.update(Math.min(rawDelta, 0.05));
+      const t = clock.getElapsedTime();
+      root.current.position.y = appearance.vertical + (!name && !reduced.current ? Math.sin(t * 1.4) * 0.012 : 0);
+    } catch {
+      failed.current = true;
+      mixer.stopAllAction();
+      onError("The model animation failed. Remove or replace this model to recover.");
+    }
   });
-  return <group ref={root}><primitive object={loaded.object} /></group>;
+  return <group ref={root} scale={appearance.scale} rotation-y={THREE.MathUtils.degToRad(appearance.rotation)}><primitive object={loaded.object} dispose={null} /></group>;
 }
-
-export function ModelStudioViewer({ model, state, onError }: { model: ModelPackage; state: AvatarState; onError: (message: string) => void }) {
-  const [loaded, setLoaded] = useState<LoadedModel | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [camera, setCamera] = useState(PRESETS["three-quarter"]);
+function CameraRig({ radius, appearance, preset, reset }: { radius: number; appearance: ModelAppearance; preset: CameraPreset; reset: number }) {
   const controls = useRef<OrbitControlsImpl>(null);
-
+  const { camera, size } = useThree();
+  const limits = cameraLimits(radius, size.width / Math.max(size.height, 1), appearance.scale);
   useEffect(() => {
-    let live = true;
-    setLoaded(null);
-    setProgress(0);
-    loadModel(model, (value) => { if (live) setProgress(value); })
-      .then((result) => { if (live) setLoaded(result); })
-      .catch((error: unknown) => { if (live) onError(error instanceof Error ? error.message : "The 3D model could not be loaded."); });
-    return () => { live = false; };
-  }, [model, onError]);
-
-  const applyCamera = useCallback((next: typeof camera) => {
-    setCamera(next);
     const control = controls.current;
     if (!control) return;
-    const azimuth = THREE.MathUtils.degToRad(next.azimuth);
-    const polar = THREE.MathUtils.degToRad(next.polar);
-    control.setAzimuthalAngle(azimuth);
-    control.setPolarAngle(polar);
-    const direction = new THREE.Vector3().setFromSphericalCoords(next.distance, polar, azimuth);
-    control.object.position.copy(control.target).add(direction);
+    const angle = preset === "side" ? Math.PI / 2 : preset === "three-quarter" ? Math.PI / 7 : 0;
+    control.target.set(0, appearance.vertical, 0);
+    camera.position.set(Math.sin(angle) * limits.fit, appearance.vertical + limits.fit * 0.04, Math.cos(angle) * limits.fit);
+    camera.lookAt(control.target);
     control.update();
-  }, []);
-
-  return (
-    <div className="relative h-full w-full bg-surface-deep">
-      <Canvas dpr={[1, 1.5]} camera={{ position: [2.3, 0.4, 3.5], fov: 38, near: 0.05, far: 100 }} gl={{ antialias: true, alpha: true }}>
-        <ambientLight intensity={0.85} />
-        <directionalLight position={[3, 5, 4]} intensity={2.2} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
-        <directionalLight position={[-3, 2, 1]} intensity={0.8} />
-        <Suspense fallback={null}>{loaded && <Character loaded={loaded} state={state} />}</Suspense>
-        <Environment>
-          <Lightformer intensity={2} position={[0, 5, 2]} scale={[8, 8, 1]} />
-          <Lightformer intensity={1} color="#67e8f9" position={[-4, 1, 0]} rotation-y={Math.PI / 2} scale={[8, 2, 1]} />
-        </Environment>
-        <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} enablePan minDistance={1.6} maxDistance={8} minPolarAngle={0.35} maxPolarAngle={Math.PI - 0.25} target={[0, 0, 0]} />
+    control.saveState();
+  }, [camera, preset, reset, limits.fit, appearance.vertical]);
+  useFrame(() => {
+    const control = controls.current;
+    if (!control) return;
+    // Keep optional two-finger pan close to the character so zoom cannot enter its bounds.
+    const center = new THREE.Vector3(0, appearance.vertical, 0);
+    const offset = control.target.clone().sub(center);
+    if (offset.length() > radius * appearance.scale * 0.15) {
+      const next = center.add(offset.clampLength(0, radius * appearance.scale * 0.15));
+      camera.position.add(next.clone().sub(control.target));
+      control.target.copy(next);
+    }
+  });
+  return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} enablePan screenSpacePanning panSpeed={0.35} minDistance={limits.min} maxDistance={limits.max} minPolarAngle={0.25} maxPolarAngle={Math.PI - 0.25} touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }} />;
+}
+export function ModelStudioViewer({ model, state, appearance, reset, onLoaded, onProgress, onError }: {
+  model: ModelPackage; state: ModelState; appearance: ModelAppearance; reset: number;
+  onLoaded: (id: string, clips: string[]) => void; onProgress: (progress: number) => void; onError: (message: string) => void;
+}) {
+  const [loaded, setLoaded] = useState<LoadedCharacter | null>(null);
+  const [preset, setPreset] = useState<CameraPreset>("three-quarter");
+  const [localReset, setLocalReset] = useState(0);
+  const [rendered, setRendered] = useState(false);
+  const loadedNotice = useRef(false);
+  useEffect(() => {
+    let live = true;
+    let owned: LoadedCharacter | null = null;
+    setLoaded(null);
+    onProgress(0);
+    const timer = window.setTimeout(() => { if (live) { live = false; onError("Model loading timed out. Try a smaller GLB."); } }, 30000);
+    void loadCharacter(model, value => { if (live) onProgress(value); }).then(result => {
+      window.clearTimeout(timer);
+      if (!live) { disposeCharacter(result.object); return; }
+      owned = result;
+      setLoaded(result);
+    }).catch((error: unknown) => {
+      window.clearTimeout(timer);
+      if (live) onError(error instanceof Error ? error.message : "This model could not load.");
+    });
+    return () => { live = false; window.clearTimeout(timer); if (owned) disposeCharacter(owned.object); };
+  }, [model, onProgress, onError]);
+  useEffect(() => {
+    if (!loaded || !rendered || loadedNotice.current) return;
+    loadedNotice.current = true;
+    onLoaded(model.id, loaded.clips.map(clip => clip.name));
+  }, [loaded, rendered, model.id, onLoaded]);
+  return <div className="relative h-full w-full touch-none bg-surface-deep" aria-label="Live 3D character viewport">
+    <RenderBoundary onError={onError}>
+      <Canvas dpr={[1, 1.5]} camera={{ position: [0, 0, 8], fov: 38, near: 0.03, far: 200 }} gl={{ antialias: true, alpha: true }} fallback={<div className="p-4 text-sm">3D is unavailable on this device.</div>} onCreated={({ gl }) => {
+        const lost = (event: Event) => { event.preventDefault(); onError("3D graphics were interrupted. Tap Retry to restore the character."); };
+        gl.domElement.addEventListener("webglcontextlost", lost, { once: true });
+      }}>
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[3, 5, 4]} intensity={2.2} />
+        <directionalLight position={[-3, 2, 1]} intensity={0.7} />
+        <Suspense fallback={null}>
+          <Environment><Lightformer intensity={2} position={[0, 5, 2]} scale={[8, 8, 1]} /><Lightformer intensity={1} position={[-4, 1, 0]} rotation-y={Math.PI / 2} scale={[8, 2, 1]} /></Environment>
+          {loaded && <><Character loaded={loaded} state={state} appearance={appearance} onError={onError} /><CameraRig radius={loaded.radius} appearance={appearance} preset={preset} reset={reset + localReset} /><FirstFrame onFrame={() => setRendered(true)} /></>}
+        </Suspense>
       </Canvas>
-      {!loaded && <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Loading model · {progress}%</div>}
-      <div className="absolute inset-x-2 bottom-2 z-10 space-y-2 rounded-md border border-border bg-card/90 p-2 backdrop-blur-md">
-        <div className="flex gap-1 overflow-x-auto pb-1">
-          {(Object.keys(PRESETS) as CameraPreset[]).map((preset) => (
-            <Button key={preset} size="sm" variant="outline" className="h-7 shrink-0 px-2 text-[10px]" onClick={() => applyCamera(PRESETS[preset])}>{preset}</Button>
-          ))}
-          <Button size="sm" className="h-7 shrink-0 px-2 text-[10px]" onClick={() => applyCamera(PRESETS["three-quarter"])}>Reset</Button>
-        </div>
-        <div className="grid grid-cols-[52px_1fr] items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
-          <span>Angle</span><Slider aria-label="Camera angle" value={[camera.azimuth]} min={-180} max={180} step={1} onValueChange={([value]) => applyCamera({ ...camera, azimuth: value ?? 0 })} />
-          <span>Distance</span><Slider aria-label="Camera distance" value={[camera.distance]} min={1.6} max={8} step={0.1} onValueChange={([value]) => applyCamera({ ...camera, distance: value ?? 4.1 })} />
-        </div>
-      </div>
-    </div>
-  );
+    </RenderBoundary>
+    {loaded && <div className="absolute inset-x-2 bottom-2 flex justify-center gap-1 rounded-md border border-border/60 bg-card/50 p-1 backdrop-blur-xl">
+      {(["front", "side", "three-quarter"] as CameraPreset[]).map(value => <Button key={value} variant={preset === value ? "secondary" : "ghost"} size="sm" className="h-8 px-3 text-[11px]" onClick={() => { setPreset(value); setLocalReset(n => n + 1); }}>{value === "three-quarter" ? "¾ view" : value === "front" ? "Front" : "Side"}</Button>)}
+      <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Reset camera" title="Reset camera" onClick={() => { setPreset("three-quarter"); setLocalReset(n => n + 1); }}><RotateCcw className="h-3.5 w-3.5" /></Button>
+    </div>}
+  </div>;
+}
+function FirstFrame({ onFrame }: { onFrame: () => void }) {
+  const frames = useRef(0);
+  useFrame(() => { frames.current++; if (frames.current === 3) onFrame(); });
+  return null;
 }

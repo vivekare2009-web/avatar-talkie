@@ -28,7 +28,7 @@ const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES = 150 * 1024 * 1024;
 const MAX_ENTRIES = 200;
 const MODEL_EXTENSIONS = ["glb", "gltf", "fbx"] as const;
-const AUXILIARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "ktx2", "bin"]);
+const AUXILIARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bin"]);
 
 function extension(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
@@ -40,7 +40,7 @@ function cleanPath(path: string) {
 
 function safePath(path: string) {
   const clean = cleanPath(path);
-  return Boolean(clean) && !clean.startsWith("/") && !clean.split("/").includes("..");
+  return Boolean(clean) && !clean.startsWith("/") && !clean.split("/").includes("..") && !/[:\u0000]/.test(clean);
 }
 
 function mimeFor(path: string) {
@@ -71,6 +71,10 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
   if (file.size > MAX_ARCHIVE_BYTES) throw new Error("Model package is larger than 100 MB.");
   const directExt = extension(file.name);
   if (MODEL_EXTENSIONS.includes(directExt as SupportedModelFormat)) {
+    if (directExt === "glb") {
+      const header = new DataView(await file.slice(0, 12).arrayBuffer());
+      if (header.byteLength < 12 || header.getUint32(0, true) !== 0x46546c67 || header.getUint32(4, true) !== 2 || header.getUint32(8, true) !== file.size) throw new Error("This is not a valid GLB 2.0 file.");
+    }
     if (directExt === "gltf") {
       const text = await file.text();
       let parsed: { buffers?: { uri?: string }[]; images?: { uri?: string }[] };
@@ -96,8 +100,15 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
   }
 
   let entries: Record<string, Uint8Array>;
-  try { entries = unzipSync(new Uint8Array(await file.arrayBuffer())); }
-  catch { throw new Error("This ZIP could not be read. It may be damaged or encrypted."); }
+  let expanded = 0;
+  let count = 0;
+  try { entries = unzipSync(new Uint8Array(await file.arrayBuffer()), { filter: entry => {
+    count++;
+    expanded += entry.originalSize;
+    if (count > MAX_ENTRIES || expanded > MAX_EXTRACTED_BYTES || !safePath(entry.name)) throw new Error("ZIP exceeds safety limits or contains unsafe paths.");
+    return true;
+  } }); }
+  catch (error) { throw new Error(error instanceof Error && error.message.startsWith("ZIP exceeds") ? error.message : "This ZIP could not be read. It may be damaged or encrypted."); }
   const paths = Object.keys(entries).filter((path) => !path.endsWith("/") && !path.startsWith("__MACOSX/"));
   if (paths.length > MAX_ENTRIES) throw new Error(`ZIP has too many files (${paths.length}; maximum ${MAX_ENTRIES}).`);
   if (paths.some((path) => !safePath(path))) throw new Error("ZIP contains an unsafe file path and was blocked.");
@@ -118,7 +129,7 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
     mainPath: cleanPath(main.path),
     files: keptPaths.map((path) => ({
       path: cleanPath(path),
-      blob: new Blob([entries[path] ?? new Uint8Array()], { type: mimeFor(path) }),
+      blob: new Blob([new Uint8Array(entries[path] ?? []).buffer], { type: mimeFor(path) }),
     })),
     savedAt: Date.now(),
   };
@@ -140,8 +151,11 @@ async function transaction<T>(mode: IDBTransactionMode, run: (store: IDBObjectSt
   const db = await openDb();
   try {
     return await new Promise<T>((resolve, reject) => {
-      const request = run(db.transaction(STORE, mode).objectStore(STORE));
-      request.onsuccess = () => resolve(request.result);
+      const tx = db.transaction(STORE, mode);
+      const request = run(tx.objectStore(STORE));
+      tx.oncomplete = () => resolve(request.result);
+      tx.onabort = () => reject(tx.error ?? new Error("Model storage was not committed."));
+      tx.onerror = () => reject(tx.error ?? new Error("Model storage failed."));
       request.onerror = () => reject(request.error ?? new Error("3D model storage failed."));
     });
   } finally { db.close(); }
@@ -154,6 +168,15 @@ export async function saveModelPackage(model: ModelPackage) {
 export async function loadLatestModelPackage(): Promise<ModelPackage | null> {
   const all = await transaction<ModelPackage[]>("readonly", (store) => store.getAll() as IDBRequest<ModelPackage[]>);
   return all.sort((a, b) => b.savedAt - a.savedAt)[0] ?? null;
+}
+
+export async function listModelPackages(): Promise<ModelPackage[]> {
+  const all = await transaction<ModelPackage[]>("readonly", store => store.getAll() as IDBRequest<ModelPackage[]>);
+  return all.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+export async function removeModelPackage(id: string) {
+  await transaction("readwrite", store => store.delete(id) as IDBRequest<undefined>);
 }
 
 export async function clearModelPackages() {
