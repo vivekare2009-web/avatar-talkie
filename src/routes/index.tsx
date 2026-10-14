@@ -5,11 +5,13 @@ import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
 import { ZoneCalibration } from "@/components/avatar/ZoneCalibration";
-import { clampZone, estimateBudget } from "@/lib/companion/behavior";
+import { boundaryAllowed, clampZone, estimateBudget } from "@/lib/companion/behavior";
 import { InAppBrowser, type BrowserHandle } from "@/components/browser/InAppBrowser";
 import { looksLikeCommand, shouldGreet } from "@/lib/companion/browser";
 import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
+import { ModelStudioSettings } from "@/components/avatar/ModelStudioSettings";
+import { DEFAULT_APPEARANCE, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
 import { ModelStudioViewer } from "@/components/avatar/ModelStudioViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,24 +38,24 @@ import {
   type MemoryRow,
 } from "@/lib/companion/memory.functions";
 import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } from "@/lib/companion/settings";
-import { deleteAsset, loadAssetLibrary, putAsset, type AssetMeta } from "@/lib/companion/videoAssetStore";
+import { loadAssetLibrary } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
-import { clearModelPackages, inspectModelUpload, loadLatestModelPackage, saveModelPackage, summarizeModelPackage, type ModelPackage } from "@/lib/companion/modelPackage";
+import { inspectModelUpload, listModelPackages, removeModelPackage, saveModelPackage, type ModelPackage } from "@/lib/companion/modelPackage";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "C2 — AI Companion with a real video avatar" },
+      { title: "C2 — AI Companion with a live 3D character" },
       {
         name: "description",
         content:
-          "C2 is a Hindi/Hinglish AI companion with a 9:16 video avatar, idle/thinking/talking states, persistent memory and configurable touch boundaries.",
+          "C2 is a Hindi/Hinglish AI companion with a portrait 3D character, idle/thinking/talking states, persistent memory and configurable touch boundaries.",
       },
-      { property: "og:title", content: "C2 — AI Companion with a real video avatar" },
+      { property: "og:title", content: "C2 — AI Companion with a live 3D character" },
       {
         property: "og:description",
-        content: "Hindi/Hinglish AI companion with a video avatar, persistent memory and boundary-aware touch.",
+        content: "Hindi/Hinglish AI companion with a live character, persistent memory and boundary-aware touch.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -75,13 +77,21 @@ function CompanionApp() {
   const [thinking, setThinking] = useState(false);
   const [avatarState, setAvatarState] = useState<AvatarState>("IDLE");
   const [sources, setSources] = useState<Partial<Record<AvatarState, string>>>(BUNDLED_CLIPS);
-  const [assetMeta, setAssetMeta] = useState<Partial<Record<AvatarState, AssetMeta>>>({});
   const [memories, setMemories] = useState<MemoryRow[]>([]);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryReady, setMemoryReady] = useState(false);
   const [memoryStatus, setMemoryStatus] = useState("Waiting for backend");
   const [memoryLastOperation, setMemoryLastOperation] = useState("None yet");
   const [modelPackage, setModelPackage] = useState<ModelPackage | null>(null);
+  const [models, setModels] = useState<ModelPackage[]>([]);
+  const [modelProgress, setModelProgress] = useState(0);
+  const [modelReady, setModelReady] = useState(false);
+  const [modelClips, setModelClips] = useState<string[]>([]);
+  const [appearance, setAppearance] = useState<ModelAppearance>(DEFAULT_APPEARANCE);
+  const [modelPreview, setModelPreview] = useState<ModelState | null>(null);
+  const [cameraReset, setCameraReset] = useState(0);
+  const [modelRetry, setModelRetry] = useState(0);
+  const modelToken = useRef(0);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState("");
@@ -107,6 +117,8 @@ function CompanionApp() {
   const manager = useRef<AvatarVideoStateManager | null>(null);
   const voice = useRef<VoiceController | null>(null);
   const revokeAssets = useRef<() => void>(() => {});
+  const modelBoundaryAt = useRef<number | null>(null);
+  const modelTap = useRef<{ x: number; y: number; at: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const log = useCallback((message: string) => {
@@ -146,13 +158,18 @@ function CompanionApp() {
     window.setTimeout(previous, 1000);
     revokeAssets.current = library.revoke;
     setSources({ ...BUNDLED_CLIPS, ...library.urls });
-    setAssetMeta(library.meta);
   }, []);
 
   useEffect(() => {
     void refreshAssets().catch(() => toast.error("Device clips could not load. Original clips are still available."));
-    void loadLatestModelPackage().then(setModelPackage).catch(() => setModelError("Saved 3D model could not be restored."));
-    return () => { assetLoad.current += 1; revokeAssets.current(); };
+    let live = true;
+    void listModelPackages().then(all => {
+      if (!live) return;
+      setModels(all);
+      const id = localStorage.getItem("c2.activeModel");
+      setModelPackage(all.find(item => item.id === id) ?? all[0] ?? null);
+    }).catch(() => { if (live) setModelError("Saved 3D model could not be restored."); });
+    return () => { live = false; modelToken.current++; assetLoad.current += 1; revokeAssets.current(); };
   }, [refreshAssets]);
 
   const refreshMemories = useCallback(async (ownerKey: string) => {
@@ -330,22 +347,47 @@ function CompanionApp() {
     manager.current?.endTransient(`${state} clip finished`);
   }, []);
 
-  const handleUpload = useCallback(
-    async (state: AvatarState, file?: File | null) => {
-      if (!file) return;
-      if (!file.type.startsWith("video/")) {
-        toast.error("Please choose a video file (.mp4).");
-        return;
-      }
-      try {
-        await putAsset(state, file);
-        await refreshAssets();
-        toast.success(`${STATE_LABELS[state]} clip saved on this device.`);
-        log(`asset saved: ${state} (${file.name})`);
-      } catch { toast.error("This clip could not be saved. Check device storage and retry."); }
-    },
-    [refreshAssets, log],
-  );
+  const modelFailed = useCallback((message: string) => {
+    setModelError(message); setModelBusy(false); setModelReady(false); log(`3D model: ${message}`);
+  }, [log]);
+  const modelLoaded = useCallback((id: string, clips: string[]) => {
+    setModelReady(true); setModelBusy(false); setModelClips(clips);
+    setModelError(null);
+    localStorage.setItem("c2.activeModel", id);
+    log("3D character rendered");
+  }, [log]);
+  const selectModel = useCallback((id: string) => {
+    modelToken.current++;
+    const next = models.find(item => item.id === id);
+    if (!next) return;
+    setModelPackage(next); setModelError(null); setModelReady(false); setModelClips([]);
+    setAppearance(DEFAULT_APPEARANCE); setModelPreview(null);
+  }, [models]);
+  const importModel = useCallback(async (file: File) => {
+    const token = ++modelToken.current;
+    setModelBusy(true); setModelError(null);
+    try {
+      const parsed = await inspectModelUpload(file);
+      if (token !== modelToken.current) return;
+      setModelPackage(parsed); setModelReady(false); setModelClips([]); setAppearance(DEFAULT_APPEARANCE); setModelPreview(null);
+    } catch (error) {
+      if (token === modelToken.current) { setModelError(error instanceof Error ? error.message : "Import failed."); setModelBusy(false); }
+    }
+  }, []);
+  useEffect(() => {
+    if (!modelPackage || !modelReady || models.some(item => item.id === modelPackage.id)) return;
+    const token = modelToken.current;
+    void saveModelPackage(modelPackage).then(() => {
+      if (token !== modelToken.current) return;
+      setModels(prev => [modelPackage, ...prev]);
+      toast.success("3D character loaded and saved on this device.");
+    }).catch(() => toast.error("Character loaded, but could not be saved on this device."));
+  }, [modelPackage, modelReady, models]);
+  useEffect(() => {
+    if (!modelPreview) return;
+    const timer = window.setTimeout(() => setModelPreview(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [modelPreview]);
 
   const lastUserText = useMemo(
     () => [...messages].reverse().find((m) => m.role === "user")?.content ?? "",
@@ -450,23 +492,37 @@ function CompanionApp() {
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
       <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
         {([
-          ["chat", MessageCircle, "Chat"], ["avatar", Box, "Studio"],
+          ["chat", MessageCircle, "Chat"], ["avatar", Box, "Avatar"],
           ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
         ] as const).map(([value, Icon, label]) => (
           <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
         ))}
       </TabsList>
 
-      <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border bg-surface-deep shadow-lg">
-        {modelPackage ? <ModelStudioViewer model={modelPackage} state={avatarState} onError={message => { setModelError(message); log(`3D model: ${message}`); }} /> : <AvatarVideoPlayer state={avatarState} sources={sources} onTransientEnded={onTransientEnded} onLog={log} />}
-        <AvatarTouchLayer
+      <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border/60 bg-surface-deep shadow-lg" onPointerDownCapture={event => {
+          if (!modelPackage || !event.isPrimary || (event.target as HTMLElement).closest("button")) { modelTap.current = null; return; }
+          modelTap.current = { x: event.clientX, y: event.clientY, at: Date.now() };
+        }} onPointerUpCapture={event => {
+          const start = modelTap.current; modelTap.current = null;
+          if (!start || !settings.touchEnabled || calibrating || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6 || Date.now() - start.at > 400) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const zone = settings.zones.find(z => { const x = (event.clientX - rect.left) / rect.width * 100, y = (event.clientY - rect.top) / rect.height * 100; return x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h; });
+          if (zone?.protected && settings.protectedZonesEnabled) {
+            const allowed = boundaryAllowed(zone, settings.touchEnabled, settings.protectedZonesEnabled, Date.now(), modelBoundaryAt.current, settings.boundaryCooldownMs);
+            if (allowed) modelBoundaryAt.current = Date.now();
+            handleTouch({ zone, triggeredBoundary: allowed, blockedByCooldown: !allowed });
+          }
+        }}>
+        {modelPackage && !modelError ? <ModelStudioViewer key={`${modelPackage.id}-${modelRetry}`} model={modelPackage} state={modelPreview ?? (listening ? "LISTENING" : avatarState)} appearance={appearance} reset={cameraReset} onLoaded={modelLoaded} onProgress={setModelProgress} onError={modelFailed} /> : activeTab !== "avatar" ? <AvatarVideoPlayer state={avatarState} sources={sources} onTransientEnded={onTransientEnded} onLog={log} /> : <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><Box className="h-10 w-10 text-primary/70" /><p className="text-sm font-medium">{modelError ? "Character unavailable" : "Your C2 character"}</p><p className="text-xs text-muted-foreground">{modelError ? "Replace the model below or retry." : "Import a 3D character below"}</p></div>}
+        {modelPackage && !modelError && !modelReady && <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-surface-deep/60 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading character · {modelProgress}%</div>}
+        {(!modelPackage || modelError) && <AvatarTouchLayer
           enabled={settings.touchEnabled && !calibrating}
           protectedZonesEnabled={settings.protectedZonesEnabled}
           zones={settings.zones}
           cooldownMs={settings.boundaryCooldownMs}
           showZones={showZones && !calibrating}
           onTouch={handleTouch}
-        />
+        />}
         {calibrating && activeTab === "settings" && <ZoneCalibration zones={settings.zones} onChange={zones => update({ zones })} />}
         {activeTab === "chat" && (
           <div className="absolute inset-x-2 bottom-2 z-10 rounded-md border border-border bg-card/90 shadow-lg backdrop-blur-md">
@@ -516,77 +572,14 @@ function CompanionApp() {
         </TabsContent>
 
         <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
-          <div className="rounded-lg border border-border bg-card p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-sm font-semibold">3D Model Studio</h2><p className="mt-1 text-[11px] text-muted-foreground">GLB, embedded GLTF, FBX, or ZIP containing one of them plus textures. A ZIP containing only .blend cannot render in a browser.</p></div>
-              <Button size="sm" asChild disabled={modelBusy}><label className="cursor-pointer"><Upload className="h-3 w-3" />Import<input type="file" className="hidden" accept=".zip,.glb,.gltf,.fbx" onChange={async event => { const file = event.target.files?.[0]; if (!file) return; setModelBusy(true); setModelError(null); try { const parsed = await inspectModelUpload(file); await clearModelPackages(); await saveModelPackage(parsed); setModelPackage(parsed); toast.success(`${parsed.format.toUpperCase()} character imported.`); } catch (error) { const message = error instanceof Error ? error.message : "Model import failed."; setModelError(message); toast.error(message); } finally { setModelBusy(false); event.target.value = ""; } }} /></label></Button>
-            </div>
-            {modelPackage && <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground"><span>{summarizeModelPackage(modelPackage).name} · {modelPackage.format.toUpperCase()} · {modelPackage.files.length} file(s)</span><Button size="sm" variant="ghost" onClick={async () => { await clearModelPackages(); setModelPackage(null); setModelError(null); }}>Use videos</Button></div>}
-            {modelError && <p role="alert" className="mt-2 text-xs text-destructive">{modelError} Muted avatar videos remain available as fallback.</p>}
-          </div>
-          {AVATAR_STATES.map((state) => (
-            <div key={state} className="rounded-lg border border-border p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">{STATE_LABELS[state]}</p>
-                  <p className="break-all text-[11px] text-muted-foreground">{EXPECTED_ASSET_FILENAMES[state]}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {assetMeta[state]
-                      ? `Loaded: ${assetMeta[state]?.name} (${Math.round((assetMeta[state]?.size ?? 0) / 1024)} KB)`
-                      : sources[state] ? "Original clip included · ready" : "Missing — upload needed"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button variant="outline" size="sm" asChild>
-                    <label className="cursor-pointer" aria-label={`Upload ${STATE_LABELS[state]} clip`} title={`Upload ${STATE_LABELS[state]} clip`}>
-                      <Upload className="mr-1 h-3 w-3" />
-                      <span className="hidden min-[390px]:inline">Upload</span>
-                      <input
-                        type="file"
-                        accept="video/mp4,video/*"
-                        className="hidden"
-                        onChange={(event) => void handleUpload(state, event.target.files?.[0])}
-                      />
-                    </label>
-                  </Button>
-                  {assetMeta[state] && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={async () => {
-                        try { await deleteAsset(state); await refreshAssets(); }
-                        catch { toast.error("The device clip could not be removed."); }
-                      }}
-                      aria-label="Remove clip"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("IDLE", "test")}>
-              Test idle
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => manager.current?.setSustained("THINKING", "test")}>
-              Test thinking
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => settings.autoSpeak ? speak("Namaste! Main C2 hoon.", "hinglish") : toast.info("Enable spoken replies in Setup to test talking.")}>
-              Test voice & talking
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => manager.current?.playTransient("UPSET", 6000, "test")}>
-              Test upset
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => manager.current?.playTransient("PERSONAL_BOUNDARY", 8000, "test")}
-            >
-              Test boundary
-            </Button>
-          </div>
+          <ModelStudioSettings models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => setCameraReset(n => n + 1)} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
+            if (!modelPackage) return;
+            const id = modelPackage.id;
+            modelToken.current++;
+            setModelPackage(null); setModelError(null); setModelReady(false); setModelBusy(false); setModelPreview(null);
+            localStorage.removeItem("c2.activeModel");
+            void removeModelPackage(id).then(() => setModels(prev => prev.filter(item => item.id !== id))).catch(() => toast.error("The saved model could not be removed. Please retry."));
+          }} />
         </TabsContent>
 
         <TabsContent value="memory" className="mt-3 space-y-3 px-3">
@@ -764,7 +757,7 @@ function CompanionApp() {
           </div>
 
           <Button variant="outline" size="sm" onClick={() => { setCalibrating(v => !v); setShowZones(false); }}>
-            {calibrating ? "Finish calibration" : "Calibrate zones on video"}
+            {calibrating ? "Finish calibration" : "Calibrate touch zones"}
           </Button>
 
           {settings.zones.map((zone, index) => (
