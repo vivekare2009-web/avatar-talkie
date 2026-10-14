@@ -3,8 +3,9 @@
 - [x] Chest/waist calibration with drag and resize handles, cooldown boundary
 - [x] In-app browser, shared typed/voice command routing, honest media outcomes
 - [x] Usage and user-entered rate/budget estimates with unavailable billing labels
-- [ ] Add 3D Model Studio for ZIP, GLB, GLTF and FBX imports with validation and persistence
-- [ ] Render imported models with mobile orbit, pan, zoom, camera presets and reset
+- [ ] Replace Avatar video-management UI with validated 3D import, selection, replacement and removal
+- [ ] Polish existing live portrait renderer, camera gestures/presets, appearance controls, state previews and cleanup
+- [ ] Verify model rendering/import/replacement/removal, preserved tabs and 320/390/430px layouts
 - [ ] Gate chat on memory readiness and add backend/load/last-operation diagnostics
 - [ ] Harden THINKING/command/voice failure recovery and session greeting cleanup
 - [ ] Regression tests, typecheck/build, and 320/390/430px verification
