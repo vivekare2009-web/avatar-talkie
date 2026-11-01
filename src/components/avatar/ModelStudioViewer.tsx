@@ -94,6 +94,12 @@ export function ModelStudioViewer({ model, state, appearance, reset, view, onVie
   const [loaded, setLoaded] = useState<LoadedCharacter | null>(null);
   const [rendered, setRendered] = useState(false);
   const loadedNotice = useRef(false);
+  const canvasLive = useRef(true);
+  const contextCleanup = useRef<() => void>(() => {});
+  useEffect(() => {
+    canvasLive.current = true;
+    return () => { canvasLive.current = false; contextCleanup.current(); };
+  }, []);
   useEffect(() => {
     let live = true;
     let owned: LoadedCharacter | null = null;
@@ -121,8 +127,9 @@ export function ModelStudioViewer({ model, state, appearance, reset, view, onVie
   return <div className="relative h-full w-full touch-none bg-surface-deep" data-scene-ready={rendered && loaded ? "true" : undefined} aria-label="Live 3D character viewport">
     <RenderBoundary onError={onError}>
       <Canvas dpr={[1, 1.5]} camera={{ position: [0, 0, 8], fov: 38, near: 0.03, far: 200 }} gl={{ antialias: true, alpha: true }} fallback={<div className="p-4 text-sm">3D is unavailable on this device.</div>} onCreated={({ gl }) => {
-        const lost = (event: Event) => { event.preventDefault(); onError("3D graphics were interrupted. Tap Retry to restore the character."); };
+        const lost = (event: Event) => { if (!canvasLive.current) return; event.preventDefault(); onError("3D graphics were interrupted. Tap Retry to restore the character."); };
         gl.domElement.addEventListener("webglcontextlost", lost, { once: true });
+        contextCleanup.current = () => gl.domElement.removeEventListener("webglcontextlost", lost);
       }}>
         <ambientLight intensity={0.8} />
         <directionalLight position={[3, 5, 4]} intensity={2.2} />
