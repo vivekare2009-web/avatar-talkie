@@ -51,11 +51,13 @@ function Character({ loaded, state, appearance, onError }: { loaded: LoadedChara
 }
 function CameraRig({ radius, appearance, view, reset, onView }: { radius: number; appearance: ModelAppearance; view: CameraView; reset: number; onView: (view: CameraView) => void }) {
   const controls = useRef<OrbitControlsImpl>(null);
+  const gestureSync = useRef(false);
   const { camera, size } = useThree();
   const limits = cameraLimits(radius, size.width / Math.max(size.height, 1), appearance.scale);
   useEffect(() => {
     const control = controls.current;
     if (!control) return;
+    if (gestureSync.current) { gestureSync.current = false; return; }
     const angle = THREE.MathUtils.degToRad(view.angle);
     const elevation = THREE.MathUtils.degToRad(view.elevation);
     const distance = THREE.MathUtils.clamp(limits.fit * view.distance, limits.min, limits.max);
@@ -77,7 +79,12 @@ function CameraRig({ radius, appearance, view, reset, onView }: { radius: number
       control.target.copy(next);
     }
   });
-  return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} enablePan screenSpacePanning panSpeed={0.35} minDistance={limits.min} maxDistance={limits.max} minPolarAngle={0.25} maxPolarAngle={Math.PI - 0.25} touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }} />;
+  return <OrbitControls ref={controls} makeDefault onEnd={() => {
+    const control = controls.current;
+    if (!control) return;
+    gestureSync.current = true;
+    onView({ angle: Math.round(THREE.MathUtils.radToDeg(control.getAzimuthalAngle())), elevation: Math.round(90 - THREE.MathUtils.radToDeg(control.getPolarAngle())), distance: camera.position.distanceTo(control.target) / limits.fit });
+  }} enableDamping dampingFactor={0.08} enablePan screenSpacePanning panSpeed={0.35} minDistance={limits.min} maxDistance={limits.max} minPolarAngle={0.25} maxPolarAngle={Math.PI - 0.25} touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }} />;
 }
 export function ModelStudioViewer({ model, state, appearance, reset, view, onView, onLoaded, onProgress, onError }: {
   model: ModelPackage; state: ModelState; appearance: ModelAppearance; reset: number;
