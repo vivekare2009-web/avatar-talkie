@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ModelPackage } from "@/lib/companion/modelPackage";
-import { animationForState, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
+import { animationForState, cameraPreset, type CameraView, type CameraPreset, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
 
-export function ModelStudioSettings({ models, model, busy, progress, ready, error, clips, appearance, preview, onImport, onSelect, onRemove, onRetry, onReset, onAppearance, onPreview }: {
+export function ModelStudioSettings({ models, model, busy, progress, ready, error, clips, appearance, preview, view, onView, onImport, onSelect, onRemove, onRetry, onReset, onAppearance, onPreview }: {
   models: ModelPackage[]; model: ModelPackage | null; busy: boolean; progress: number; ready: boolean; error: string | null; clips: string[];
   appearance: ModelAppearance; preview: ModelState | null;
+  view: CameraView; onView: (value: CameraView) => void;
   onImport: (file: File) => void; onSelect: (id: string) => void; onRemove: () => void; onRetry: () => void; onReset: () => void;
   onAppearance: (value: ModelAppearance) => void; onPreview: (state: ModelState | null) => void;
 }) {
@@ -29,6 +30,10 @@ export function ModelStudioSettings({ models, model, busy, progress, ready, erro
     {error && <div role="alert" className="space-y-2 text-xs text-destructive"><p className="break-words">{error}</p><Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>}
     {model && <>
       <div className="flex items-center gap-2"><Button variant="outline" size="sm" onClick={onReset}><RotateCcw className="h-3.5 w-3.5" />Reset camera</Button><Button variant="ghost" size="sm" onClick={onRemove} disabled={busy}><Trash2 className="h-3.5 w-3.5" />Remove</Button></div>
+      <div className="space-y-3 border-t border-border/50 pt-3" aria-label="Camera controls">
+        <div className="flex flex-wrap gap-1">{(["front", "side", "back", "three-quarter", "close-up", "full-body"] as CameraPreset[]).map(preset => <Button key={preset} size="sm" variant="outline" className="h-9 bg-secondary/20 px-2 text-[11px]" onClick={() => { onView(cameraPreset(preset)); onReset(); onView(cameraPreset(preset)); }}>{preset === "three-quarter" ? "¾ view" : preset === "close-up" ? "Close-up" : preset === "full-body" ? "Full body" : preset[0]?.toUpperCase() + preset.slice(1)}</Button>)}</div>
+        {([['angle', 'Camera angle', -180, 180, 1], ['elevation', 'Camera elevation', -65, 65, 1], ['distance', 'Camera distance', 0.3, 2.5, 0.01]] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><div className="flex justify-between text-xs"><span>{label}</span><span className="text-muted-foreground">{key === "distance" ? `${Math.round(view[key] * 100)}%` : `${view[key]}°`}</span></div><Slider aria-label={label} value={[view[key]]} min={min} max={max} step={step} onValueChange={([value]) => onView({ ...view, [key]: value ?? view[key] })} /></div>)}
+      </div>
       <div className="space-y-3 border-t border-border/50 pt-3">
         {([['scale', 'Character size', 0.7, 1.4, 0.01], ['vertical', 'Vertical position', -0.5, 0.5, 0.01], ['rotation', 'Character rotation', -180, 180, 1]] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><div className="flex justify-between text-xs"><span>{label}</span><span className="text-muted-foreground">{key === "scale" ? `${Math.round(appearance[key] * 100)}%` : key === "rotation" ? `${appearance[key]}°` : appearance[key].toFixed(2)}</span></div><Slider aria-label={label} value={[appearance[key]]} min={min} max={max} step={step} onValueChange={([value]) => onAppearance({ ...appearance, [key]: value ?? appearance[key] })} /></div>)}
       </div>

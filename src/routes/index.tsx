@@ -11,7 +11,7 @@ import { looksLikeCommand, shouldGreet } from "@/lib/companion/browser";
 import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
 import { ModelStudioSettings } from "@/components/avatar/ModelStudioSettings";
-import { DEFAULT_APPEARANCE, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
+import { DEFAULT_APPEARANCE, DEFAULT_CAMERA, type CameraView, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
 import { ModelStudioViewer } from "@/components/avatar/ModelStudioViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -90,6 +90,7 @@ function CompanionApp() {
   const [appearance, setAppearance] = useState<ModelAppearance>(DEFAULT_APPEARANCE);
   const [modelPreview, setModelPreview] = useState<ModelState | null>(null);
   const [cameraReset, setCameraReset] = useState(0);
+  const [cameraView, setCameraView] = useState<CameraView>(DEFAULT_CAMERA);
   const [modelRetry, setModelRetry] = useState(0);
   const modelToken = useRef(0);
   const [modelBusy, setModelBusy] = useState(false);
@@ -353,7 +354,7 @@ function CompanionApp() {
   const modelLoaded = useCallback((id: string, clips: string[]) => {
     setModelReady(true); setModelBusy(false); setModelClips(clips);
     setModelError(null);
-    localStorage.setItem("c2.activeModel", id);
+    try { localStorage.setItem("c2.activeModel", id); } catch { log("Active model selection could not be saved."); }
     log("3D character rendered");
   }, [log]);
   const selectModel = useCallback((id: string) => {
@@ -362,6 +363,7 @@ function CompanionApp() {
     if (!next) return;
     setModelPackage(next); setModelError(null); setModelReady(false); setModelClips([]);
     setAppearance(DEFAULT_APPEARANCE); setModelPreview(null);
+    setCameraView(DEFAULT_CAMERA);
   }, [models]);
   const importModel = useCallback(async (file: File) => {
     const token = ++modelToken.current;
@@ -370,6 +372,7 @@ function CompanionApp() {
       const parsed = await inspectModelUpload(file);
       if (token !== modelToken.current) return;
       setModelPackage(parsed); setModelReady(false); setModelClips([]); setAppearance(DEFAULT_APPEARANCE); setModelPreview(null);
+      setCameraView(DEFAULT_CAMERA);
     } catch (error) {
       if (token === modelToken.current) { setModelError(error instanceof Error ? error.message : "Import failed."); setModelBusy(false); }
     }
@@ -513,7 +516,7 @@ function CompanionApp() {
             handleTouch({ zone, triggeredBoundary: allowed, blockedByCooldown: !allowed });
           }
         }}>
-        {modelPackage && !modelError ? <ModelStudioViewer key={`${modelPackage.id}-${modelRetry}`} model={modelPackage} state={modelPreview ?? (listening ? "LISTENING" : avatarState)} appearance={appearance} reset={cameraReset} onLoaded={modelLoaded} onProgress={setModelProgress} onError={modelFailed} /> : activeTab !== "avatar" ? <AvatarVideoPlayer state={avatarState} sources={sources} onTransientEnded={onTransientEnded} onLog={log} /> : <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><Box className="h-10 w-10 text-primary/70" /><p className="text-sm font-medium">{modelError ? "Character unavailable" : "Your C2 character"}</p><p className="text-xs text-muted-foreground">{modelError ? "Replace the model below or retry." : "Import a 3D character below"}</p></div>}
+        {modelPackage && !modelError ? <ModelStudioViewer key={`${modelPackage.id}-${modelRetry}`} model={modelPackage} state={modelPreview ?? (listening ? "LISTENING" : avatarState)} appearance={appearance} reset={cameraReset} view={cameraView} onView={setCameraView} onLoaded={modelLoaded} onProgress={setModelProgress} onError={modelFailed} /> : activeTab !== "avatar" ? <AvatarVideoPlayer state={avatarState} sources={sources} onTransientEnded={onTransientEnded} onLog={log} /> : <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><Box className="h-10 w-10 text-primary/70" /><p className="text-sm font-medium">{modelError ? "Character unavailable" : "Your C2 character"}</p><p className="text-xs text-muted-foreground">{modelError ? "Replace the model below or retry." : "Import a 3D character below"}</p></div>}
         {modelPackage && !modelError && !modelReady && <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-surface-deep/60 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading character · {modelProgress}%</div>}
         {(!modelPackage || modelError) && <AvatarTouchLayer
           enabled={settings.touchEnabled && !calibrating}
@@ -572,7 +575,7 @@ function CompanionApp() {
         </TabsContent>
 
         <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
-          <ModelStudioSettings models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => setCameraReset(n => n + 1)} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
+          <ModelStudioSettings models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} view={cameraView} onView={setCameraView} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => { setCameraView(DEFAULT_CAMERA); setCameraReset(n => n + 1); }} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
             if (!modelPackage) return;
             const id = modelPackage.id;
             modelToken.current++;
