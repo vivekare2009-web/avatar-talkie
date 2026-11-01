@@ -36,7 +36,9 @@ test("ZIP extraction retains nested GLTF, buffers and all textures", async () =>
   const model = await inspectModelUpload(new File([bytes.buffer as ArrayBuffer], "character.zip"));
   expect(model.mainPath).toBe("character/model.gltf");
   expect(model.files.map(file => file.path)).toEqual(["character/model.gltf", "character/mesh.bin", "character/textures/skin.png"]);
-  expect([...new Uint8Array(await model.files[1]?.blob.arrayBuffer())]).toEqual([1, 2, 3]);
+  const buffer = model.files[1];
+  if (!buffer) throw new Error("Extracted buffer is missing");
+  expect([...new Uint8Array(await buffer.blob.arrayBuffer())]).toEqual([1, 2, 3]);
 });
 test("ZIP chooses GLB and supports FBX with packaged textures", async () => {
   for (const format of ["glb", "fbx"] as const) {
