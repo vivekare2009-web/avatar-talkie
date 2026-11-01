@@ -38,8 +38,12 @@ export async function loadCharacter(model: ModelPackage, progress: (value: numbe
     if ([...urls.values()].includes(requested) || requested.startsWith("data:")) return requested;
     let decoded: string;
     try { decoded = decodeURIComponent(requested); } catch { throw new Error("Invalid texture path."); }
-    const relative = decoded.replace(/^blob:.*\//, "");
-    const resolved = urls.get(clean(`${directory}/${relative}`)) ?? urls.get(clean(relative));
+    const relative = decoded.replace(/^blob:.*\//, "").replaceAll("\\", "/");
+    // FBX exports can carry the author's absolute texture paths. Resolve only
+    // to an unambiguous packaged basename, never to the network/filesystem.
+    const basename = relative.split("/").pop();
+    const matches = [...urls.entries()].filter(([path]) => path.split("/").pop() === basename);
+    const resolved = urls.get(clean(`${directory}/${relative}`)) ?? urls.get(clean(relative)) ?? (matches.length === 1 ? matches[0]?.[1] : undefined);
     if (!resolved) throw new Error(`Missing or unsupported model resource: ${relative}. Include it in the ZIP.`);
     return resolved;
   });

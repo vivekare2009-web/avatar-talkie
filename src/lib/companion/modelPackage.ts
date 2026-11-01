@@ -1,4 +1,4 @@
-import { unzipSync } from "fflate";
+import { unzip } from "fflate";
 
 export type SupportedModelFormat = "glb" | "gltf" | "fbx";
 
@@ -102,12 +102,12 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
   let entries: Record<string, Uint8Array>;
   let expanded = 0;
   let count = 0;
-  try { entries = unzipSync(new Uint8Array(await file.arrayBuffer()), { filter: entry => {
+  try { const bytes = new Uint8Array(await file.arrayBuffer()); entries = await new Promise<Record<string, Uint8Array>>((resolve, reject) => { unzip(bytes, { filter: entry => {
     count++;
     expanded += entry.originalSize;
     if (count > MAX_ENTRIES || expanded > MAX_EXTRACTED_BYTES || !safePath(entry.name)) throw new Error("ZIP exceeds safety limits or contains unsafe paths.");
     return true;
-  } }); }
+   } }, (error, result) => { if (error) reject(error); else resolve(result); }); }); }
   catch (error) { throw new Error(error instanceof Error && error.message.startsWith("ZIP exceeds") ? error.message : "This ZIP could not be read. It may be damaged or encrypted."); }
   const paths = Object.keys(entries).filter((path) => !path.endsWith("/") && !path.startsWith("__MACOSX/"));
   if (paths.length > MAX_ENTRIES) throw new Error(`ZIP has too many files (${paths.length}; maximum ${MAX_ENTRIES}).`);

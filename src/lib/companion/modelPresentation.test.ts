@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { animationForState, cameraLimits } from "./modelPresentation";
+import { animationForState, cameraLimits, cameraPreset } from "./modelPresentation";
 import { inspectModelUpload } from "./modelPackage";
 import { zipSync } from "fflate";
 
@@ -25,4 +25,34 @@ test("ZIP path traversal is rejected before extraction", async () => {
 });
 test("direct GLTF external textures require a package", async () => {
   await expect(inspectModelUpload(new File([JSON.stringify({ images: [{ uri: "skin.png" }] })], "character.gltf"))).rejects.toThrow("together in a ZIP");
+});
+test("ZIP extraction retains nested GLTF, buffers and all textures", async () => {
+  const bytes = zipSync({
+    "character/model.gltf": new TextEncoder().encode(JSON.stringify({ asset: { version: "2.0" }, buffers: [{ uri: "mesh.bin" }], images: [{ uri: "textures/skin.png" }] })),
+    "character/mesh.bin": new Uint8Array([1, 2, 3]),
+    "character/textures/skin.png": new Uint8Array([4, 5]),
+    "source/model.blend": new Uint8Array([9]),
+  });
+  const model = await inspectModelUpload(new File([bytes.buffer as ArrayBuffer], "character.zip"));
+  expect(model.mainPath).toBe("character/model.gltf");
+  expect(model.files.map(file => file.path)).toEqual(["character/model.gltf", "character/mesh.bin", "character/textures/skin.png"]);
+  const buffer = model.files[1];
+  if (!buffer) throw new Error("Extracted buffer is missing");
+  expect([...new Uint8Array(await buffer.blob.arrayBuffer())]).toEqual([1, 2, 3]);
+});
+test("ZIP chooses GLB and supports FBX with packaged textures", async () => {
+  for (const format of ["glb", "fbx"] as const) {
+    const bytes = zipSync({ [`avatar.${format}`]: new Uint8Array([1]), "skin.jpg": new Uint8Array([2]) });
+    const model = await inspectModelUpload(new File([bytes.buffer as ArrayBuffer], "avatar.zip"));
+    expect(model.format).toBe(format);
+    expect(model.files.length).toBe(2);
+  }
+});
+test("camera presets cover the requested views and close-up zoom", () => {
+  expect(cameraPreset("front").angle).toBe(0);
+  expect(cameraPreset("side").angle).toBe(90);
+  expect(cameraPreset("back").angle).toBe(180);
+  expect(cameraPreset("three-quarter").angle).toBe(26);
+  expect(cameraPreset("close-up").distance).toBe(0.55);
+  expect(cameraPreset("full-body").distance).toBe(1);
 });

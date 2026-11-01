@@ -14,3 +14,5 @@
 - Use TanStack Start server functions for internal companion calls; preserve the current memory store while updating presentation.
 - Treat entered token rates as estimates for visible text only; never present these as provider billing or workspace credits.
 - Store imported character packages in browser IndexedDB and render validated GLB/GLTF/FBX with React Three Fiber; keep muted state videos as the failure fallback so a bad model cannot break C2.
+- Keep camera presets/framing in browser-safe helpers and Studio controls outside the portrait canvas so mobile controls never obscure the character.
+- Load Bun test declarations without Bun global runtime types; this browser/Worker app must retain the standard fetch contract.
