@@ -5,7 +5,7 @@
 - [x] Usage and user-entered rate/budget estimates with unavailable billing labels
 - [x] Replace Avatar video-management UI with validated 3D import, selection, replacement and removal
 - [x] Polish existing live portrait renderer, camera gestures/presets, appearance controls, state previews and cleanup
-- [ ] Verify model rendering/import/replacement/removal, preserved tabs and 320/390/430px layouts
+- [x] Verify model rendering/import/replacement/removal, preserved tabs and 320/390/430px layouts
 - [ ] Gate chat on memory readiness and add backend/load/last-operation diagnostics
 - [ ] Harden THINKING/command/voice failure recovery and session greeting cleanup
-- [ ] Regression tests, typecheck/build, and 320/390/430px verification
+- [x] Studio regression tests, automatic typecheck/build, and 320/390/430px verification
