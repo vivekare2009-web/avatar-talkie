@@ -231,3 +231,22 @@
     animation-duration: 0.01ms !important;
   }
 }
+
+/* Full-bleed stage: a 9:16 frame that covers the viewport in portrait and fits it in landscape,
+   so touch zones keep using frame coordinates. */
+.c2-stage {
+  position: fixed;
+  z-index: 0;
+  width: max(100vw, calc(100dvh * 9 / 16));
+  height: max(100dvh, calc(100vw * 16 / 9));
+  left: calc((100vw - max(100vw, calc(100dvh * 9 / 16))) / 2);
+  top: calc((100dvh - max(100dvh, calc(100vw * 16 / 9))) / 2);
+}
+@media (orientation: landscape) {
+  .c2-stage {
+    width: calc(100dvh * 9 / 16);
+    height: 100dvh;
+    left: calc((100vw - 100dvh * 9 / 16) / 2);
+    top: 0;
+  }
+}

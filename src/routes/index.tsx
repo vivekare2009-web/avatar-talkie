@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Camera, Square } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Camera, Square, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -481,7 +481,7 @@ function CompanionApp() {
     <div className="c2-app c2-galaxy relative min-h-[100dvh] w-full overflow-x-hidden text-foreground">
       <div className="c2-particles" aria-hidden="true" />
       <Toaster />
-      <main className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-md flex-col pb-44 pt-[env(safe-area-inset-top)]">
+      <main className="pointer-events-none relative z-10 mx-auto flex min-h-[100svh] min-h-[100dvh] w-full max-w-2xl flex-col pb-48 [&>*]:pointer-events-auto pt-[env(safe-area-inset-top)]">
       <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
         <button type="button" onClick={() => setRailOpen(v => !v)} aria-label={railOpen ? "Hide navigation" : "Show navigation"} aria-expanded={railOpen} className="c2-glass grid h-11 w-11 shrink-0 place-items-center rounded-full transition-transform active:scale-95">
           <MenuIcon className="h-5 w-5" />
@@ -499,7 +499,7 @@ function CompanionApp() {
       {commandStatus && <p role="status" className="c2-glass mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="relative min-w-0 flex-1">
-      {railOpen && <TabsList className="c2-glass absolute left-2 top-3 z-30 flex h-auto w-14 flex-col gap-1 rounded-full p-1.5">
+      {railOpen && <TabsList className="c2-glass absolute left-2 top-3 z-30 pointer-events-auto flex h-auto w-14 flex-col gap-1 rounded-full p-1.5">
         {([
           ["chat", MessageCircle, "Chat"], ["avatar", Box, "Avatar"],
           ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
@@ -508,7 +508,7 @@ function CompanionApp() {
         ))}
       </TabsList>}
 
-      <div className={cn("relative aspect-[9/16] overflow-hidden rounded-[2rem] border border-glass-border bg-surface-deep/40 shadow-[var(--shadow-glow)]", railOpen ? "ml-[4.5rem] mr-3" : "mx-3")} onPointerDownCapture={event => {
+      <div className="c2-stage overflow-hidden" onPointerDownCapture={event => {
           if (!modelPackage || !event.isPrimary || (event.target as HTMLElement).closest("button")) { modelTap.current = null; return; }
           modelTap.current = { x: event.clientX, y: event.clientY, at: Date.now() };
         }} onPointerUpCapture={event => {
@@ -534,7 +534,7 @@ function CompanionApp() {
         />}
         {calibrating && activeTab === "settings" && <ZoneCalibration zones={settings.zones} onChange={zones => update({ zones })} />}
         {activeTab === "chat" && (
-          <div className="c2-glass absolute inset-x-2 bottom-2 z-10 rounded-3xl">
+          <div className="c2-glass fixed inset-x-3 bottom-[calc(10.5rem+env(safe-area-inset-bottom))] z-30 mx-auto max-w-xl rounded-3xl">
             <Button variant="ghost" className="h-8 w-full justify-between text-xs" aria-expanded={chatExpanded} onClick={() => setChatExpanded(v => !v)}>
               <span>Conversation · {messages.length} messages</span>{chatExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
             </Button>
@@ -548,19 +548,19 @@ function CompanionApp() {
       </div>
 
       {missingAssets.length > 0 && (
-        <p className="c2-glass mx-4 mt-3 rounded-2xl px-3 py-2 text-xs text-muted-foreground">
+        <p className="c2-glass relative z-20 mx-4 mt-3 rounded-2xl px-3 py-2 text-xs text-muted-foreground">
           Missing clips: {missingAssets.map(state => EXPECTED_ASSET_FILENAMES[state]).join(", ")}
         </p>
       )}
 
-        <TabsContent value="chat" className="mt-3 space-y-3 px-3">
+        <TabsContent value="chat" className="sr-only">
           <p className="text-[11px] text-muted-foreground">
             Detected: {languageLabel(detection.language)} · confidence {detection.confidence}
             {detection.matched.length ? ` · signals: ${detection.matched.join(", ")}` : ""}
           </p>
         </TabsContent>
 
-        <TabsContent value="avatar" className="mt-3 space-y-3 px-3">
+        <TabsContent value="avatar" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
           <ModelStudioSettings models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} view={cameraView} onView={setCameraView} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => { setCameraView(DEFAULT_CAMERA); setCameraReset(n => n + 1); }} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
             if (!modelPackage) return;
             const id = modelPackage.id;
@@ -571,7 +571,7 @@ function CompanionApp() {
           }} />
         </TabsContent>
 
-        <TabsContent value="memory" className="mt-3 space-y-3 px-3">
+        <TabsContent value="memory" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
           <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-card p-3 text-center text-[10px]"><div><span className="block text-muted-foreground">Backend</span>{memoryStatus}</div><div><span className="block text-muted-foreground">Loaded</span>{memories.length}</div><div><span className="block text-muted-foreground">Last operation</span>{memoryLastOperation}</div></div>
           <div className="flex gap-2">
             <Input placeholder="Key (e.g. city)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
@@ -666,7 +666,7 @@ function CompanionApp() {
           </p>
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-3 space-y-4 px-3">
+        <TabsContent value="settings" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-4 overflow-y-auto rounded-3xl p-3">
           <div className="space-y-1">
             <Label>Your name</Label>
             <Input value={settings.displayName} onChange={(e) => update({ displayName: e.target.value })} />
@@ -815,8 +815,9 @@ function CompanionApp() {
       </Tabs>
       </main>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 mx-auto w-full max-w-md px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="mb-3 flex justify-center">
+      <div className="fixed inset-x-0 bottom-0 z-40 mx-auto w-full max-w-xl px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="mb-3 flex items-center justify-center gap-4">
+          <button type="button" onClick={() => update({ autoSpeak: !settings.autoSpeak })} aria-label={settings.autoSpeak ? "Mute C2 voice" : "Unmute C2 voice"} aria-pressed={settings.autoSpeak} className="c2-glass grid h-12 w-12 place-items-center rounded-full transition-transform active:scale-95">{settings.autoSpeak ? <Volume2 className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}</button>
           <button
             type="button"
             onClick={() => listening ? recognitionRef.current?.stop() : startListening()}
@@ -826,6 +827,7 @@ function CompanionApp() {
           >
             <Mic className="h-7 w-7" />
           </button>
+          <button type="button" onClick={() => setActiveTab(activeTab === "settings" ? "chat" : "settings")} aria-label="Setup" aria-pressed={activeTab === "settings"} className="c2-glass grid h-12 w-12 place-items-center rounded-full transition-transform active:scale-95"><SettingsIcon className="h-5 w-5" /></button>
         </div>
         <div className="c2-glass flex items-center gap-2 rounded-full py-1.5 pl-4 pr-1.5">
           <MessageCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
