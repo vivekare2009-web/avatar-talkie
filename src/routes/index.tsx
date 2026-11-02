@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Camera, Square } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTouchLayer";
@@ -103,6 +104,7 @@ function CompanionApp() {
   const [listening, setListening] = useState(false);
   const [activeTab, setActiveTab] = useState("chat");
   const [chatExpanded, setChatExpanded] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
   const [calibrating, setCalibrating] = useState(false);
   const [commandStatus, setCommandStatus] = useState("");
   const [requests, setRequests] = useState(0);
@@ -506,7 +508,6 @@ function CompanionApp() {
           <TabsTrigger key={value} value={value} aria-label={label} title={label} className="h-11 w-11 rounded-full p-0 text-muted-foreground transition-colors data-[state=active]:bg-primary/40 data-[state=active]:text-foreground data-[state=active]:shadow-none"><Icon className="h-5 w-5" /></TabsTrigger>
         ))}
       </TabsList>}
-      <div className={cn("flex justify-end gap-2 px-4 pb-2", railOpen && "hidden")}><button type="button" onClick={() => setShowZones(v => !v)} aria-label="Show touch zones" className="sr-only">zones</button></div>
 
       <div className={cn("relative aspect-[9/16] overflow-hidden rounded-[2rem] border border-glass-border bg-surface-deep/40 shadow-[var(--shadow-glow)]", railOpen ? "ml-[4.5rem] mr-3" : "mx-3")} onPointerDownCapture={event => {
           if (!modelPackage || !event.isPrimary || (event.target as HTMLElement).closest("button")) { modelTap.current = null; return; }
@@ -534,7 +535,7 @@ function CompanionApp() {
         />}
         {calibrating && activeTab === "settings" && <ZoneCalibration zones={settings.zones} onChange={zones => update({ zones })} />}
         {activeTab === "chat" && (
-          <div className="absolute inset-x-2 bottom-2 z-10 rounded-md border border-border bg-card/90 shadow-lg backdrop-blur-md">
+          <div className="c2-glass absolute inset-x-2 bottom-2 z-10 rounded-3xl">
             <Button variant="ghost" className="h-8 w-full justify-between text-xs" aria-expanded={chatExpanded} onClick={() => setChatExpanded(v => !v)}>
               <span>Conversation · {messages.length} messages</span>{chatExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
             </Button>
@@ -548,7 +549,7 @@ function CompanionApp() {
       </div>
 
       {missingAssets.length > 0 && (
-        <p className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+        <p className="c2-glass mx-4 mt-3 rounded-2xl px-3 py-2 text-xs text-muted-foreground">
           Missing clips: {missingAssets.map(state => EXPECTED_ASSET_FILENAMES[state]).join(", ")}
         </p>
       )}
@@ -719,6 +720,11 @@ function CompanionApp() {
           <div className="flex items-center justify-between">
             <Label>Speak replies out loud</Label>
             <Switch checked={settings.autoSpeak} onCheckedChange={(v) => update({ autoSpeak: v })} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label>Show touch zones</Label>
+            <Switch checked={showZones} onCheckedChange={setShowZones} />
           </div>
 
           <div className="flex items-center justify-between">
