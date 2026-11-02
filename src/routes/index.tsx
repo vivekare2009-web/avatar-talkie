@@ -477,32 +477,38 @@ function CompanionApp() {
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
-    <div className="c2-app mx-auto flex min-h-screen w-full max-w-md flex-col overflow-x-hidden bg-background text-foreground">
+    <div className="c2-app c2-galaxy relative min-h-[100dvh] w-full overflow-x-hidden text-foreground">
+      <div className="c2-particles" aria-hidden="true" />
       <Toaster />
-      <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-3">
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">C2</h1>
-          <p className="text-xs text-muted-foreground">
+      <main className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-md flex-col pb-44 pt-[env(safe-area-inset-top)]">
+      <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
+        <button type="button" onClick={() => setRailOpen(v => !v)} aria-label={railOpen ? "Hide navigation" : "Show navigation"} aria-expanded={railOpen} className="c2-glass grid h-11 w-11 shrink-0 place-items-center rounded-full transition-transform active:scale-95">
+          <MenuIcon className="h-5 w-5" />
+        </button>
+        <div className="min-w-0 text-center">
+          <h1 className="truncate text-base font-semibold tracking-wide">C2</h1>
+          <p className="truncate text-[11px] text-muted-foreground">
             {STATE_LABELS[avatarState]} · voice {voiceStatus} · {languageLabel(detection.language)}
           </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={() => setShowZones((v) => !v)} aria-label="Show touch zones">
-          <SettingsIcon className="h-5 w-5" />
-        </Button>
+        <button type="button" disabled title="Capture is not available yet" aria-label="Capture (not available yet)" className="c2-glass flex h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm opacity-50">
+          <Camera className="h-4 w-4" /><span className="hidden min-[360px]:inline">Capture</span>
+        </button>
       </header>
-      {commandStatus && <p role="status" className="mx-3 mb-2 truncate rounded bg-card px-2 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
+      {commandStatus && <p role="status" className="c2-glass mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
-      <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="flex-1 min-w-0 pb-6">
-      <TabsList className="mx-3 mb-2 grid w-[calc(100%-1.5rem)] grid-cols-5 bg-card p-1">
+      <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="relative min-w-0 flex-1">
+      {railOpen && <TabsList className="c2-glass absolute left-2 top-3 z-30 flex h-auto w-14 flex-col gap-1 rounded-full p-1.5">
         {([
           ["chat", MessageCircle, "Chat"], ["avatar", Box, "Avatar"],
           ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
         ] as const).map(([value, Icon, label]) => (
-          <TabsTrigger key={value} value={value} aria-label={label} title={label} className="min-w-0 px-1"><Icon className="h-4 w-4" /><span className="ml-1 hidden min-[390px]:inline text-[10px]">{label}</span></TabsTrigger>
+          <TabsTrigger key={value} value={value} aria-label={label} title={label} className="h-11 w-11 rounded-full p-0 text-muted-foreground transition-colors data-[state=active]:bg-primary/40 data-[state=active]:text-foreground data-[state=active]:shadow-none"><Icon className="h-5 w-5" /></TabsTrigger>
         ))}
-      </TabsList>
+      </TabsList>}
+      <div className={cn("flex justify-end gap-2 px-4 pb-2", railOpen && "hidden")}><button type="button" onClick={() => setShowZones(v => !v)} aria-label="Show touch zones" className="sr-only">zones</button></div>
 
-      <div className="relative mx-3 aspect-[9/16] overflow-hidden rounded-md border border-border/60 bg-surface-deep shadow-lg" onPointerDownCapture={event => {
+      <div className={cn("relative aspect-[9/16] overflow-hidden rounded-[2rem] border border-glass-border bg-surface-deep/40 shadow-[var(--shadow-glow)]", railOpen ? "ml-[4.5rem] mr-3" : "mx-3")} onPointerDownCapture={event => {
           if (!modelPackage || !event.isPrimary || (event.target as HTMLElement).closest("button")) { modelTap.current = null; return; }
           modelTap.current = { x: event.clientX, y: event.clientY, at: Date.now() };
         }} onPointerUpCapture={event => {
@@ -548,26 +554,6 @@ function CompanionApp() {
       )}
 
         <TabsContent value="chat" className="mt-3 space-y-3 px-3">
-          <div className="flex items-end gap-2">
-            <Textarea
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void handleSend();
-                }
-              }}
-              placeholder="Message C2…"
-              className="min-h-11 resize-none"
-            />
-            <Button variant="outline" size="icon" className="shrink-0" onClick={() => listening ? recognitionRef.current?.stop() : startListening()} aria-label={listening ? "Stop listening" : "Speak"}>
-              <Mic className="h-4 w-4" />
-            </Button>
-            <Button size="icon" className="shrink-0" onClick={() => void handleSend()} disabled={thinking} aria-label="Send">
-              {thinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            </Button>
-          </div>
           <p className="text-[11px] text-muted-foreground">
             Detected: {languageLabel(detection.language)} · confidence {detection.confidence}
             {detection.matched.length ? ` · signals: ${detection.matched.join(", ")}` : ""}
@@ -818,10 +804,46 @@ function CompanionApp() {
             </div>
           </div>
         </TabsContent>
-        <div className={activeTab === "browser" ? "mx-3 mt-3 h-[70vh] overflow-hidden rounded-md border border-border" : "hidden"}>
+        <div className={activeTab === "browser" ? "c2-glass mx-3 mt-3 h-[70dvh] overflow-hidden rounded-3xl" : "hidden"}>
           <InAppBrowser ref={browserRef} onLog={log} />
         </div>
       </Tabs>
+      </main>
+
+      <div className="fixed inset-x-0 bottom-0 z-40 mx-auto w-full max-w-md px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="mb-3 flex justify-center">
+          <button
+            type="button"
+            onClick={() => listening ? recognitionRef.current?.stop() : startListening()}
+            aria-label={listening ? "Stop listening" : "Speak to C2"}
+            aria-pressed={listening}
+            className={cn("c2-mic grid h-16 w-16 place-items-center rounded-full text-primary-foreground transition-transform duration-200 active:scale-95", listening && "c2-mic-live")}
+          >
+            <Mic className="h-7 w-7" />
+          </button>
+        </div>
+        <div className="c2-glass flex items-center gap-2 rounded-full py-1.5 pl-4 pr-1.5">
+          <MessageCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onFocus={() => { if (activeTab !== "chat" && activeTab !== "browser") setActiveTab("chat"); }}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void handleSend(); } }}
+            placeholder="Ask Anything"
+            aria-label="Message C2"
+            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+          />
+          {voiceStatus === "speaking" ? (
+            <button type="button" onClick={() => voice.current?.stop()} aria-label="Stop C2 speaking" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent text-accent-foreground transition-colors">
+              <Square className="h-4 w-4" />
+            </button>
+          ) : (
+            <button type="button" onClick={() => void handleSend()} disabled={thinking || !input.trim()} aria-label="Send" className="c2-mic grid h-10 w-10 shrink-0 place-items-center rounded-full text-primary-foreground transition-opacity disabled:opacity-40">
+              {thinking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
