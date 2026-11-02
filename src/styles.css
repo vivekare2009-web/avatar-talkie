@@ -99,27 +99,82 @@
   --sidebar-ring: oklch(0.704 0.04 256.788);
 }
 
-/* C2 stays navy during loading, including before hydration. */
+/* C2 cosmic purple theme, applied before hydration too. */
 :root, html:has(.c2-app) {
   color-scheme: dark;
-  --background: oklch(0.19488507 0.02911751 259.83742536);
-  --surface-deep: oklch(0.19488507 0.02911751 259.83742536);
-  --foreground: oklch(0.96 0.015 250);
-  --card: oklch(0.20641830 0.03378006 265.53228903);
-  --card-foreground: oklch(0.96 0.015 250);
-  --popover: oklch(0.24361565 0.03523398 262.60887809);
-  --popover-foreground: oklch(0.96 0.015 250);
-  --primary: oklch(0.69 0.12 249);
-  --primary-foreground: oklch(0.15 0.025 260);
-  --secondary: oklch(0.24361565 0.03523398 262.60887809);
-  --secondary-foreground: oklch(0.96 0.015 250);
-  --muted: oklch(0.24361565 0.03523398 262.60887809);
-  --muted-foreground: oklch(0.73 0.025 250);
-  --accent: oklch(0.31 0.055 244);
-  --accent-foreground: oklch(0.96 0.015 250);
-  --border: oklch(0.32798798 0.04682508 260.86923133);
-  --input: oklch(0.32798798 0.04682508 260.86923133);
-  --ring: oklch(0.69 0.12 249);
+  --background: oklch(0.16 0.05 290);
+  --surface-deep: oklch(0.14 0.05 292);
+  --foreground: oklch(0.97 0.02 300);
+  --card: oklch(0.26 0.08 300 / 0.42);
+  --card-foreground: oklch(0.97 0.02 300);
+  --popover: oklch(0.22 0.07 295);
+  --popover-foreground: oklch(0.97 0.02 300);
+  --primary: oklch(0.68 0.2 310);
+  --primary-glow: oklch(0.75 0.19 335);
+  --primary-foreground: oklch(0.99 0.01 300);
+  --secondary: oklch(0.3 0.09 298 / 0.5);
+  --secondary-foreground: oklch(0.97 0.02 300);
+  --muted: oklch(0.28 0.07 296 / 0.5);
+  --muted-foreground: oklch(0.8 0.05 300);
+  --accent: oklch(0.36 0.12 305 / 0.6);
+  --accent-foreground: oklch(0.97 0.02 300);
+  --border: oklch(0.8 0.12 310 / 0.22);
+  --input: oklch(0.8 0.12 310 / 0.25);
+  --ring: oklch(0.72 0.2 315);
+  --glass: oklch(0.3 0.1 300 / 0.35);
+  --glass-strong: oklch(0.24 0.09 298 / 0.6);
+  --glass-border: oklch(0.85 0.12 315 / 0.28);
+  --gradient-primary: linear-gradient(135deg, var(--primary), var(--primary-glow));
+  --shadow-glow: 0 0 28px -4px color-mix(in oklab, var(--primary-glow) 70%, transparent);
+}
+
+@theme inline {
+  --color-primary-glow: var(--primary-glow);
+  --color-glass: var(--glass);
+  --color-glass-strong: var(--glass-strong);
+  --color-glass-border: var(--glass-border);
+}
+
+.c2-galaxy {
+  background:
+    radial-gradient(60% 40% at 20% 15%, oklch(0.42 0.18 320 / 0.35), transparent 70%),
+    radial-gradient(55% 45% at 85% 70%, oklch(0.4 0.17 290 / 0.4), transparent 70%),
+    radial-gradient(120% 90% at 50% 100%, oklch(0.22 0.09 295), oklch(0.12 0.04 285));
+}
+.c2-particles {
+  position: fixed;
+  inset: -10%;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(3px 3px at 12% 22%, oklch(0.85 0.18 330 / 0.8), transparent),
+    radial-gradient(5px 5px at 78% 12%, oklch(0.8 0.18 310 / 0.5), transparent),
+    radial-gradient(2px 2px at 40% 48%, oklch(0.95 0.05 300 / 0.8), transparent),
+    radial-gradient(7px 7px at 88% 58%, oklch(0.75 0.2 335 / 0.35), transparent),
+    radial-gradient(3px 3px at 22% 78%, oklch(0.85 0.15 300 / 0.6), transparent),
+    radial-gradient(9px 9px at 60% 86%, oklch(0.7 0.2 320 / 0.25), transparent),
+    radial-gradient(2px 2px at 66% 32%, oklch(0.95 0.05 300 / 0.7), transparent);
+  filter: blur(0.6px);
+  animation: c2-drift 40s ease-in-out infinite alternate;
+}
+@keyframes c2-drift {
+  to { transform: translate3d(2%, -3%, 0); }
+}
+.c2-glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(16px);
+}
+.c2-mic {
+  background: var(--gradient-primary);
+  box-shadow: var(--shadow-glow);
+}
+.c2-mic-live { animation: c2-pulse 1.6s ease-in-out infinite; }
+@keyframes c2-pulse {
+  50% { box-shadow: 0 0 44px 4px color-mix(in oklab, var(--primary-glow) 75%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c2-particles, .c2-mic-live { animation: none; }
 }
 
 .dark {
