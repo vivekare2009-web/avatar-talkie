@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Camera, Square, Volume2, VolumeX } from "lucide-react";
+import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Images, Shirt, X as CloseIcon, Camera, Square, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -8,7 +8,9 @@ import { AvatarTouchLayer, type TouchResult } from "@/components/avatar/AvatarTo
 import { ZoneCalibration } from "@/components/avatar/ZoneCalibration";
 import { boundaryAllowed, clampZone, estimateBudget } from "@/lib/companion/behavior";
 import { InAppBrowser, type BrowserHandle } from "@/components/browser/InAppBrowser";
-import { looksLikeCommand, shouldGreet } from "@/lib/companion/browser";
+import { isDuplicateTranscript, looksLikeCommand, normalizeTranscript, shouldGreet } from "@/lib/companion/browser";
+import { EDGE_ZONE_PX, GESTURE_EXEMPT, swipeIntent } from "@/lib/companion/navigation";
+import { summarizeModelPackage } from "@/lib/companion/modelPackage";
 import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
 import { ModelStudioSettings } from "@/components/avatar/ModelStudioSettings";
@@ -103,7 +105,9 @@ function CompanionApp() {
   const [listening, setListening] = useState(false);
   const [activeTab, setActiveTab] = useState("chat");
   const [chatExpanded, setChatExpanded] = useState(false);
-  const [railOpen, setRailOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const swipeStart = useRef<{ x: number; y: number; id: number } | null>(null);
+  const lastTranscript = useRef<{ text: string; at: number } | null>(null);
   const [calibrating, setCalibrating] = useState(false);
   const [commandStatus, setCommandStatus] = useState("");
   const [requests, setRequests] = useState(0);
@@ -259,7 +263,7 @@ function CompanionApp() {
         setCommandStatus(`${outcome.status === "completed" ? "Completed" : outcome.status === "playing" ? "Playing" : outcome.status === "blocked" ? "Blocked" : "Failed"} · ${outcome.message}`);
         if (outcome.status === "failed") break;
       }
-      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: last, language: "en" }]);
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: last, language: detectLanguage(text).language }]);
       return true;
     } catch {
       setCommandStatus("Failed · command error");
@@ -420,6 +424,13 @@ function CompanionApp() {
     return () => window.clearInterval(id);
   }, [settings, speak]);
 
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
+
   const startListening = useCallback(() => {
     const SpeechRecognition =
       (window as unknown as { SpeechRecognition?: new () => never; webkitSpeechRecognition?: new () => never })
@@ -445,6 +456,9 @@ function CompanionApp() {
       recognition.interimResults = false;
       recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
+        const now = Date.now();
+        if (isDuplicateTranscript(transcript, lastTranscript.current, now)) return;
+        lastTranscript.current = { text: normalizeTranscript(transcript), at: now };
         setInput(transcript);
         void handleSend(transcript);
       };
@@ -478,12 +492,43 @@ function CompanionApp() {
   const missingAssets = AVATAR_STATES.filter((state) => !sources[state]);
 
   return (
-    <div className="c2-app c2-galaxy relative min-h-[100dvh] w-full overflow-x-hidden text-foreground">
+    <div className="c2-app c2-galaxy relative min-h-[100dvh] w-full overflow-x-hidden text-foreground"
+      onPointerDown={event => {
+        const target = event.target as HTMLElement;
+        if (!event.isPrimary || target.closest(GESTURE_EXEMPT) || target.closest("[data-zone]")) { swipeStart.current = null; return; }
+        if (!sidebarOpen && event.clientX > EDGE_ZONE_PX) { swipeStart.current = null; return; }
+        swipeStart.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+      }}
+      onPointerUp={event => {
+        const start = swipeStart.current; swipeStart.current = null;
+        if (!start || start.id !== event.pointerId) return;
+        const intent = swipeIntent(start, { x: event.clientX, y: event.clientY }, sidebarOpen);
+        if (intent) setSidebarOpen(intent === "open");
+      }}
+      onPointerCancel={() => { swipeStart.current = null; }}>
       <div className="c2-particles" aria-hidden="true" />
       <Toaster />
+      {sidebarOpen && <div className="fixed inset-0 z-50 bg-surface-deep/40" aria-hidden="true" onClick={() => setSidebarOpen(false)} />}
+      <nav id="c2-sidebar" aria-label="C2 sections" aria-hidden={!sidebarOpen} inert={!sidebarOpen}
+        className={cn("c2-glass fixed inset-y-0 left-0 z-50 flex w-64 max-w-[80vw] flex-col gap-1 rounded-r-3xl p-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] transition-transform duration-200", sidebarOpen ? "translate-x-0" : "-translate-x-full")}>
+        <div className="mb-2 flex items-center justify-between px-2"><span className="text-base font-semibold tracking-wide">C2</span>
+          <button type="button" onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="grid h-10 w-10 place-items-center rounded-full hover:bg-primary/20"><CloseIcon className="h-5 w-5" /></button></div>
+        {([["chat", MessageCircle, "Chat"], ["gallery", Images, "Gallery"], ["avatar", Shirt, "Outfit"], ["settings", SettingsIcon, "Settings"], ["memory", Brain, "Memory"]] as const).map(([value, Icon, label]) => (
+          <button key={value} type="button" aria-current={activeTab === value ? "page" : undefined} onClick={() => { setActiveTab(value); if (value !== "settings") setCalibrating(false); setSidebarOpen(false); }}
+            className={cn("flex h-12 items-center gap-3 rounded-2xl px-3 text-sm transition-colors", activeTab === value ? "bg-primary/40 text-foreground" : "text-muted-foreground hover:bg-primary/15")}>
+            <Icon className="h-5 w-5" />{label}
+          </button>
+        ))}
+        <div className="my-2 h-px bg-border/60" />
+        <button type="button" aria-current={activeTab === "browser" ? "page" : undefined} onClick={() => { setActiveTab("browser"); setCalibrating(false); setSidebarOpen(false); }}
+          className={cn("flex h-12 items-center gap-3 rounded-2xl px-3 text-sm transition-colors", activeTab === "browser" ? "bg-primary/40 text-foreground" : "text-muted-foreground hover:bg-primary/15")}>
+          <Globe className="h-5 w-5" />Browser
+        </button>
+        <p className="mt-auto px-3 text-[11px] text-muted-foreground">Swipe from the left edge to open · swipe left to close</p>
+      </nav>
       <main className="pointer-events-none relative z-10 mx-auto flex min-h-[100svh] min-h-[100dvh] w-full max-w-2xl flex-col pb-48 [&>*]:pointer-events-auto pt-[env(safe-area-inset-top)]">
       <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
-        <button type="button" onClick={() => setRailOpen(v => !v)} aria-label={railOpen ? "Hide navigation" : "Show navigation"} aria-expanded={railOpen} className="c2-glass grid h-11 w-11 shrink-0 place-items-center rounded-full transition-transform active:scale-95">
+        <button type="button" onClick={() => setSidebarOpen(v => !v)} aria-label={sidebarOpen ? "Close menu" : "Open menu"} aria-expanded={sidebarOpen} aria-controls="c2-sidebar" className="c2-glass grid h-11 w-11 shrink-0 place-items-center rounded-full transition-transform active:scale-95">
           <MenuIcon className="h-5 w-5" />
         </button>
         <div className="min-w-0 text-center">
@@ -499,14 +544,7 @@ function CompanionApp() {
       {commandStatus && <p role="status" className="c2-glass mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="relative min-w-0 flex-1">
-      {railOpen && <TabsList className="c2-glass absolute left-2 top-3 z-30 pointer-events-auto flex h-auto w-14 flex-col gap-1 rounded-full p-1.5">
-        {([
-          ["chat", MessageCircle, "Chat"], ["avatar", Box, "Avatar"],
-          ["memory", Brain, "Memory"], ["settings", SettingsIcon, "Setup"], ["browser", Globe, "Browser"],
-        ] as const).map(([value, Icon, label]) => (
-          <TabsTrigger key={value} value={value} aria-label={label} title={label} className="h-11 w-11 rounded-full p-0 text-muted-foreground transition-colors data-[state=active]:bg-primary/40 data-[state=active]:text-foreground data-[state=active]:shadow-none"><Icon className="h-5 w-5" /></TabsTrigger>
-        ))}
-      </TabsList>}
+
 
       <div className="c2-stage overflow-hidden" onPointerDownCapture={event => {
           if (!modelPackage || !event.isPrimary || (event.target as HTMLElement).closest("button")) { modelTap.current = null; return; }
@@ -571,6 +609,28 @@ function CompanionApp() {
           }} />
         </TabsContent>
 
+        <TabsContent value="gallery" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
+          <p className="text-sm font-medium">Gallery</p>
+          <p className="text-[11px] text-muted-foreground">Assets already on this device or bundled with C2. Nothing here is uploaded to the cloud.</p>
+          <p className="text-xs font-medium text-muted-foreground">Character clips (muted)</p>
+          <div className="grid grid-cols-2 gap-2 min-[400px]:grid-cols-3">
+            {AVATAR_STATES.map(state => sources[state] ? (
+              <figure key={state} className="overflow-hidden rounded-2xl border border-border/60 bg-surface-deep/40">
+                <video src={sources[state]} muted playsInline preload="metadata" className="aspect-[9/16] w-full object-cover" onLoadedMetadata={e => { e.currentTarget.muted = true; e.currentTarget.volume = 0; }} />
+                <figcaption className="p-2 text-[11px]"><span className="block truncate font-medium">{STATE_LABELS[state]}</span><span className="text-muted-foreground">Video · {sources[state] === BUNDLED_CLIPS[state] ? "built-in" : "this device"}</span></figcaption>
+              </figure>
+            ) : <div key={state} className="grid aspect-[9/16] place-items-center rounded-2xl border border-dashed border-border p-2 text-center text-[11px] text-muted-foreground">No {STATE_LABELS[state]} clip</div>)}
+          </div>
+          <p className="text-xs font-medium text-muted-foreground">3D characters</p>
+          {models.length === 0 ? <p className="text-[11px] text-muted-foreground">No 3D characters imported yet. Add one in Outfit.</p> : (
+            <ul className="space-y-2">{models.map(model => { const sum = summarizeModelPackage(model); return (
+              <li key={model.id} className="flex items-center gap-3 rounded-2xl border border-border/60 bg-surface-deep/40 p-2">
+                <Box className="h-8 w-8 shrink-0 text-primary/80" />
+                <div className="min-w-0 flex-1 text-[11px]"><p className="truncate text-sm font-medium">{model.name}</p><p className="text-muted-foreground">{model.format.toUpperCase()} · {model.files.length} file{model.files.length === 1 ? "" : "s"}{model.id === modelPackage?.id ? " · active" : ""}</p></div>
+                <span className="sr-only">{sum.name}</span>
+              </li>); })}</ul>
+          )}
+        </TabsContent>
         <TabsContent value="memory" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
           <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-card p-3 text-center text-[10px]"><div><span className="block text-muted-foreground">Backend</span>{memoryStatus}</div><div><span className="block text-muted-foreground">Loaded</span>{memories.length}</div><div><span className="block text-muted-foreground">Last operation</span>{memoryLastOperation}</div></div>
           <div className="flex gap-2">
@@ -809,7 +869,7 @@ function CompanionApp() {
             </div>
           </div>
         </TabsContent>
-        <div className={activeTab === "browser" ? "c2-glass mx-3 mt-3 h-[70dvh] overflow-hidden rounded-3xl" : "hidden"}>
+        <div data-no-swipe className={activeTab === "browser" ? "c2-glass mx-3 mt-3 h-[70dvh] overflow-hidden rounded-3xl" : "hidden"}>
           <InAppBrowser ref={browserRef} onLog={log} />
         </div>
       </Tabs>
