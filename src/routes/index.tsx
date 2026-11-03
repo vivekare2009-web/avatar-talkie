@@ -10,7 +10,6 @@ import { boundaryAllowed, clampZone, estimateBudget } from "@/lib/companion/beha
 import { InAppBrowser, type BrowserHandle } from "@/components/browser/InAppBrowser";
 import { isDuplicateTranscript, looksLikeCommand, normalizeTranscript, shouldGreet } from "@/lib/companion/browser";
 import { EDGE_ZONE_PX, GESTURE_EXEMPT, swipeIntent } from "@/lib/companion/navigation";
-import { summarizeModelPackage } from "@/lib/companion/modelPackage";
 import { classifyCommand } from "@/lib/companion/browser.functions";
 import { AvatarVideoPlayer } from "@/components/avatar/AvatarVideoPlayer";
 import { ModelStudioSettings } from "@/components/avatar/ModelStudioSettings";
@@ -21,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import {
   AVATAR_STATES,
@@ -623,12 +622,11 @@ function CompanionApp() {
           </div>
           <p className="text-xs font-medium text-muted-foreground">3D characters</p>
           {models.length === 0 ? <p className="text-[11px] text-muted-foreground">No 3D characters imported yet. Add one in Outfit.</p> : (
-            <ul className="space-y-2">{models.map(model => { const sum = summarizeModelPackage(model); return (
+            <ul className="space-y-2">{models.map(model => (
               <li key={model.id} className="flex items-center gap-3 rounded-2xl border border-border/60 bg-surface-deep/40 p-2">
                 <Box className="h-8 w-8 shrink-0 text-primary/80" />
                 <div className="min-w-0 flex-1 text-[11px]"><p className="truncate text-sm font-medium">{model.name}</p><p className="text-muted-foreground">{model.format.toUpperCase()} · {model.files.length} file{model.files.length === 1 ? "" : "s"}{model.id === modelPackage?.id ? " · active" : ""}</p></div>
-                <span className="sr-only">{sum.name}</span>
-              </li>); })}</ul>
+              </li>))}</ul>
           )}
         </TabsContent>
         <TabsContent value="memory" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
