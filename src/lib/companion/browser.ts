@@ -20,8 +20,8 @@ export const SITES: Record<SiteKey, { label: string; url: string; embeddable: bo
 };
 
 const SITE_ALIASES: [RegExp, SiteKey][] = [
-  [/\b(youtube|you tube|yt|यूट्यूब)\b/i, "youtube"],
-  [/\b(google|गूगल)\b/i, "google"],
+  [/\b(youtube|you tube|yt)\b|यूट्यूब/i, "youtube"],
+  [/\b(google)\b|गूगल/i, "google"],
   [/\b(twitter|x\.com|ट्विटर)\b|(^|\s)x(\s|$)/i, "x"],
   [/\b(wikipedia|wiki)\b/i, "wikipedia"],
   [/\b(instagram|insta)\b/i, "instagram"],
@@ -77,7 +77,7 @@ export function looksLikeCommand(text: string): boolean {
   if (/https?:\/\/|\b[a-z0-9-]+\.(com|in|org|net|io|co)\b/.test(t)) return true;
   if (/^\s*(c2[\s,]+)?(back|forward|refresh|reload|home|peeche|aage)\b/.test(t)) return true;
   const verb = /\b(kholo|khol|chalao|chala|open|search|dhundo|dhoondo|khojo|play|laga|lagao|bajao|sunao|kar do|karo)\b|खोलो|चलाओ|लगा|बजाओ/;
-  const target = /\b(youtube|google|twitter|x|website|site|browser|gaana|gana|song|video|wikipedia|insta|instagram|facebook)\b|यूट्यूब|गूगल|गाना/;
+  const target = /\b(youtube|you tube|yt|google|twitter|x|website|site|browser|gaana|gana|song|video|wikipedia|insta|instagram|facebook)\b|यूट्यूब|गूगल|गाना/;
   return verb.test(t) && (target.test(t) || /\b(play|bajao|laga do|lagao)\b/.test(t));
 }
 
@@ -100,7 +100,7 @@ export function parseCommandLocally(raw: string): BrowserAction[] {
     return v.ok ? [{ type: "open_url", url: v.url }] : [];
   }
   const site = SITE_ALIASES.find(([re]) => re.test(text))?.[1];
-  const filler = /\b(c2|youtube|you tube|google|pe|par|per|me|mein|on|kholo|khol|chalao|chala|open|aur|and|then|search|karo|kar|do|dhundo|dhoondo|khojo|play|laga|lagao|bajao|sunao|please|plz|gaana|gana|song|the|ko|ki|ka)\b/gi;
+  const filler = /\b(c2|youtube|you tube|yt|browser|google|pe|par|per|me|mein|main|in|on|kholo|khol|chalao|chala|open|aur|and|then|search|karo|kar|do|dhundo|dhoondo|khojo|play|laga|lagao|bajao|sunao|please|plz|gaana|gana|song|the|ko|ki|ka)\b/gi;
   const query = text.replace(filler, " ").replace(/\s+/g, " ").trim();
   const wantsPlay = /\b(play|laga|lagao|bajao|sunao|chalao)\b/i.test(t) && query.length >= 2;
   const wantsSearch = /\b(search|dhundo|dhoondo|khojo)\b/i.test(t) && query.length >= 2;
@@ -134,4 +134,13 @@ export function sanitizeActions(input: unknown): BrowserAction[] {
 /** Greet only on a genuine session start/resume, not every refresh. */
 export function shouldGreet(now: number, lastActive: number | null, gapMs = 30 * 60_000) {
   return lastActive === null || now - lastActive >= gapMs;
+}
+
+/** Speech engines often fire the same final result twice; drop repeats within a window. */
+export function isDuplicateTranscript(text: string, last: { text: string; at: number } | null, now: number, windowMs = 2500) {
+  const norm = text.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return !!last && last.text === norm && now - last.at < windowMs;
+}
+export function normalizeTranscript(text: string) {
+  return text.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
