@@ -526,7 +526,7 @@ function CompanionApp() {
         <p className="mt-auto px-3 text-[11px] text-muted-foreground">Swipe from the left edge to open · swipe left to close</p>
       </nav>
       <main className="pointer-events-none relative z-10 mx-auto flex min-h-[100svh] min-h-[100dvh] w-full max-w-2xl flex-col pb-48 [&>*]:pointer-events-auto pt-[env(safe-area-inset-top)]">
-      <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
+      <header className="relative z-30 grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
         <button type="button" onClick={() => setSidebarOpen(v => !v)} aria-label={sidebarOpen ? "Close menu" : "Open menu"} aria-expanded={sidebarOpen} aria-controls="c2-sidebar" className="c2-glass grid h-11 w-11 shrink-0 place-items-center rounded-full transition-transform active:scale-95">
           <MenuIcon className="h-5 w-5" />
         </button>
@@ -540,7 +540,7 @@ function CompanionApp() {
           <Camera className="h-4 w-4" /><span className="hidden min-[360px]:inline">Capture</span>
         </button>
       </header>
-      {commandStatus && <p role="status" className="c2-glass mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
+      {commandStatus && <p role="status" className="c2-glass relative z-30 mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="relative min-w-0 flex-1">
 
