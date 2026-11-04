@@ -6,6 +6,9 @@
 - [x] Replace Avatar video-management UI with validated 3D import, selection, replacement and removal
 - [x] Polish existing live portrait renderer, camera gestures/presets, appearance controls, state previews and cleanup
 - [x] Verify model rendering/import/replacement/removal, preserved tabs and 320/390/430px layouts
-- [ ] Gate chat on memory readiness and add backend/load/last-operation diagnostics
-- [ ] Harden THINKING/command/voice failure recovery and session greeting cleanup
+- [x] Gate chat on memory readiness and add backend/load/last-operation diagnostics
+- [ ] Phase 3: conversational prompt/tag safety and context-aware gentle check-ins
+- [ ] Phase 3: persistent controls, foreground idle eligibility and session greeting cleanup
+- [ ] Phase 3: voice preparation/fallback, send/recognition/stale-response recovery
+- [ ] Phase 3: regression suite, automatic compilation and mobile flow verification
 - [x] Studio regression tests, automatic typecheck/build, and 320/390/430px verification
