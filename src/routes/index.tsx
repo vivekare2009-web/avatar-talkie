@@ -1,3 +1,4 @@
+import { checkInFallback, eligibleCheckIn, recognitionError, requestsQuiet, SendGuard, type IdleState } from "@/lib/companion/conversation";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Mic, Send, Settings as SettingsIcon, Trash2, Upload, MessageCircle, Box, Brain, Globe, ChevronDown, ChevronUp, Menu as MenuIcon, Images, Shirt, X as CloseIcon, Camera, Square, Volume2, VolumeX } from "lucide-react";
@@ -65,7 +66,7 @@ export const Route = createFileRoute("/")({
   component: CompanionApp,
 });
 
-type ChatMessage = { id: string; role: "user" | "assistant"; content: string; language: string };
+type ChatMessage = { id: string; role: "user" | "assistant"; content: string; language: string; failed?: boolean };
 
 function uid() {
   return Math.random().toString(36).slice(2);
@@ -113,6 +114,22 @@ function CompanionApp() {
   const [inputTokens, setInputTokens] = useState(0);
   const [outputTokens, setOutputTokens] = useState(0);
   const sendBusy = useRef(false);
+  const sendGuard = useRef(new SendGuard());
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const idleState = useRef<IdleState>({ lastInteraction: null, lastCheckIn: null, consumed: false, quiet: false });
+  const idleGeneration = useRef(0);
+  const [chatStatus, setChatStatus] = useState("");
+  const [micStatus, setMicStatus] = useState("");
+  const [voiceNotice, setVoiceNotice] = useState("");
+  const [failedText, setFailedText] = useState<string | null>(null);
+  const fallbackIndex = useRef(0);
+  const markInteraction = useCallback(() => {
+    idleState.current.lastInteraction = Date.now();
+    idleState.current.consumed = false;
+    idleGeneration.current++;
+    if (document.visibilityState === "visible") localStorage.setItem("c2.lastActive", String(Date.now()));
+  }, []);
   const searchBusy = useRef(false);
   const assetLoad = useRef(0);
   const browserRef = useRef<BrowserHandle | null>(null);
@@ -145,6 +162,8 @@ function CompanionApp() {
     voice.current = new VoiceController();
 
     return () => {
+      sendGuard.current.invalidate();
+      idleGeneration.current++;
       unsubscribe();
       stateManager.dispose();
       voice.current?.dispose();
@@ -207,6 +226,7 @@ function CompanionApp() {
     setSettings((prev) => {
       if (!prev) return prev;
       const next = { ...prev, ...patch, zones: (patch.zones ?? prev.zones).map(clampZone) };
+      if (patch.proactiveConversation === false) { idleState.current.consumed = true; idleGeneration.current++; }
       if (patch.autoSpeak === false) { voice.current?.stop(); manager.current?.setSustained("IDLE", "voice muted"); setVoiceStatus("idle"); }
       saveSettings(next);
       return next;
@@ -214,8 +234,8 @@ function CompanionApp() {
   }, []);
 
   const speak = useCallback(
-    (text: string, language: "hi" | "hinglish" | "en") => {
-      if (!settings || !settings.autoSpeak) return;
+    (text: string, language: "hi" | "hinglish" | "en", proactive = false) => {
+      if (!settings || !settings.autoSpeak || (proactive && (voice.current?.isBusy || browserRef.current?.mediaActive()))) return;
       const stateManager = manager.current;
       voice.current?.speak(
         text,
@@ -224,8 +244,12 @@ function CompanionApp() {
           language,
           geminiVoice: settings.geminiVoice,
           sovitsUrl: settings.sovitsUrl,
+          deviceFallback: settings.deviceVoiceFallback,
+          freshRequest: !proactive,
         },
         {
+          onPreparing: () => { setVoiceNotice(""); setVoiceStatus("preparing"); },
+          onFallback: (message) => { setVoiceNotice(message); toast.info(message); },
           onStart: () => {
             browserRef.current?.pauseMedia();
             setVoiceStatus("speaking");
@@ -236,6 +260,7 @@ function CompanionApp() {
             stateManager?.setSustained("IDLE", "voice ended");
           },
           onError: (message) => {
+            setVoiceNotice(message);
             setVoiceStatus("error");
             toast.error(message);
           },
@@ -271,63 +296,95 @@ function CompanionApp() {
   }, [log]);
 
   const handleSend = useCallback(
-    async (raw?: string) => {
+    async (raw?: string, retry = false) => {
       const text = (raw ?? input).trim();
-      if (!text || !settings || sendBusy.current) return;
+      if (!text || !settings || sendGuard.current.busy) return;
+      if (voice.current?.isBusy) { setChatStatus("C2 is speaking. Tap Stop before sending; your message is kept."); return; }
       if (!memoryReady) { toast.info("C2 is still loading your memories. Please wait a moment."); return; }
-      if (looksLikeCommand(text)) {
-        setMessages(prev => [...prev, { id: uid(), role: "user", content: text, language: detectLanguage(text).language }]);
-        setInput("");
-        sendBusy.current = true;
-        try { if (await runCommand(text)) return; } finally { sendBusy.current = false; }
-      }
-      const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
-      const userMessage: ChatMessage = { id: uid(), role: "user", content: text, language: resolved.language };
-      const history = [...messages, userMessage];
-      setMessages(history);
-      setInput("");
+      const token = sendGuard.current.acquire();
+      if (token === null) return;
       sendBusy.current = true;
-      voice.current?.stop();
-      setVoiceStatus("idle");
-      setThinking(true);
-      setRequests((n) => n + 1);
-      setInputTokens((n) => n + Math.ceil(history.slice(-12).reduce((a, m) => a + m.content.length, 0) / 3));
-      manager.current?.setSustained("THINKING", "generating reply");
-      log(`language → ${resolved.language} (${resolved.reason})`);
-
+      markInteraction();
+      idleState.current.quiet = requestsQuiet(text);
+      setChatStatus("Connecting…"); setFailedText(null); setThinking(true);
+      const resolved = resolveReplyLanguage(text, settings.preferredLanguage);
+      const history = retry ? messagesRef.current.filter(message => !message.failed) : [...messagesRef.current, { id: uid(), role: "user" as const, content: text, language: resolved.language }];
+      if (!retry) setMessages(history);
+      setInput("");
+      const fail = (notice: string) => { setChatStatus(notice); setFailedText(text); };
       try {
-        const reply = await sendChat({
-          data: {
-            ownerKey: settings.ownerKey,
-            displayName: settings.displayName,
-            language: resolved.language,
-            messages: history.slice(-12).map((m) => ({ role: m.role, content: m.content })),
-            memories: memories.slice(0, 60).map((m) => ({ key: m.memory_key, value: m.memory_value })),
-          },
-        });
-
-        setMessages((prev) => [
-          ...prev,
-          { id: uid(), role: "assistant", content: reply.reply, language: reply.language },
-        ]);
-        setOutputTokens((n) => n + Math.ceil(reply.reply.length / 3));
+        if (looksLikeCommand(text) && await runCommand(text)) { setChatStatus(""); return; }
+        setRequests(n => n + 1);
+        setInputTokens(n => n + Math.ceil(history.slice(-12).reduce((a, m) => a + m.content.length, 0) / 3));
+        manager.current?.setSustained("THINKING", "generating reply");
+        log(`language → ${resolved.language} (${resolved.reason})`);
+        const reply = await sendChat({ data: {
+          ownerKey: settings.ownerKey, displayName: settings.displayName, language: resolved.language,
+          messages: history.slice(-12).map(m => ({ role: m.role, content: m.content })),
+          memories: memories.slice(0, 60).map(m => ({ key: m.memory_key, value: m.memory_value })),
+          mode: "reply", freshRequest: true,
+        } });
+        if (!sendGuard.current.isCurrent(token)) return;
+        if (!reply.ok) { fail(reply.notice ?? "C2 could not answer. Your message is saved below; retry when ready."); return; }
+        setMessages(prev => [...prev, { id: uid(), role: "assistant", content: reply.reply, language: reply.language }]);
+        setOutputTokens(n => n + Math.ceil(reply.reply.length / 3));
+        setChatStatus("Connected");
         if (reply.notice) toast.warning(reply.notice);
-        if (reply.saved.length) {
-          toast.success(`Saved to memory: ${reply.saved.map((s) => s.key).join(", ")}`);
-          void refreshMemories(settings.ownerKey);
-        }
+        if (reply.saved.length) { toast.success(`Saved to memory: ${reply.saved.map(item => item.key).join(", ")}`); void refreshMemories(settings.ownerKey); }
+        manager.current?.setSustained("IDLE", "reply ready");
         if (reply.mood === "upset") manager.current?.playTransient("UPSET", 6000, "upset reply");
-        setThinking(false);
-        if (settings.autoSpeak) speak(reply.reply, reply.language);
-        else manager.current?.setSustained("IDLE", "reply shown");
-      } catch {
-        setThinking(false);
-        manager.current?.setSustained("IDLE", "chat failed");
-        toast.error("C2 could not answer right now. Please try again.");
-      } finally { sendBusy.current = false; }
+        speak(reply.reply, reply.language);
+      } catch { if (sendGuard.current.isCurrent(token)) fail("Connection failed. Your message is still in chat. Check your network and retry."); }
+      finally {
+        if (sendGuard.current.isCurrent(token)) {
+          setThinking(false); sendBusy.current = false;
+          if (!voice.current?.isBusy) manager.current?.setSustained("IDLE", "request ended");
+          sendGuard.current.release(token);
+        }
+      }
     },
-    [input, settings, thinking, messages, memories, memoryReady, log, refreshMemories, speak, runCommand],
+    [input, settings, memories, memoryReady, log, refreshMemories, speak, runCommand, markInteraction],
   );
+
+  // Foreground-only scheduler: no microphone access and no timer-driven listening.
+  useEffect(() => {
+    if (!settings) return;
+    const eligible = () => eligibleCheckIn(Date.now(), idleState.current, {
+      enabled: settings.proactiveConversation, visible: document.visibilityState === "visible", chat: activeTab === "chat" && !sidebarOpen,
+      busy: sendGuard.current.busy, speaking: voice.current?.isBusy ?? false,
+      listening: listening || recognitionRef.current !== null, media: browserRef.current?.mediaActive() ?? false, ready: memoryReady,
+    });
+    const timer = window.setInterval(() => {
+      if (!eligible()) return;
+      const token = sendGuard.current.acquire();
+      if (token === null) return;
+      const generation = idleGeneration.current;
+      idleState.current.consumed = true;
+      idleState.current.lastCheckIn = Date.now();
+      sendBusy.current = true;
+      const history = messagesRef.current.slice(-12);
+      const lastUser = [...history].reverse().find(m => m.role === "user")?.content ?? "";
+      const language = resolveReplyLanguage(lastUser, settings.preferredLanguage).language;
+      void (async () => {
+        try {
+          const reply = await sendChat({ data: { ownerKey: settings.ownerKey, displayName: settings.displayName, language,
+            messages: history.map(m => ({ role: m.role, content: m.content })), memories: memories.slice(0, 60).map(m => ({ key: m.memory_key, value: m.memory_value })),
+            mode: "checkin", freshRequest: false } });
+          if (!sendGuard.current.isCurrent(token) || generation !== idleGeneration.current || document.visibilityState !== "visible" || voice.current?.isBusy || recognitionRef.current || browserRef.current?.mediaActive()) return;
+          if (!reply.ok && reply.status && reply.status !== 429 && reply.status < 500) { setChatStatus(reply.notice ?? "Check-in unavailable."); return; }
+          const text = reply.ok ? reply.reply : checkInFallback(language, fallbackIndex.current++);
+          if (!text) return;
+          if (!reply.ok) setChatStatus(reply.notice ?? "Check-in connection unavailable; showing a local check-in.");
+          setMessages(prev => [...prev, { id: uid(), role: "assistant", content: text, language }]);
+          speak(text, language, true);
+        } catch {
+          // No automatic replays. Transport failures are visible; next idle window needs user interaction.
+          if (generation === idleGeneration.current) setChatStatus("Gentle check-in unavailable. Your conversation is still here.");
+        } finally { if (sendGuard.current.isCurrent(token)) { sendBusy.current = false; sendGuard.current.release(token); } }
+      })();
+    }, 1000);
+    return () => { window.clearInterval(timer); idleGeneration.current++; };
+  }, [settings, activeTab, sidebarOpen, listening, memoryReady, memories, speak]);
 
   const handleTouch = useCallback(
     (result: TouchResult) => {
@@ -405,22 +462,28 @@ function CompanionApp() {
     [input, lastUserText],
   );
 
-  // Greet once per genuine session start/resume (30 min inactivity), not on every refresh.
+  // Greeting admission is separate from real user engagement (which arms check-ins).
   useEffect(() => {
-    if (!settings || greeted.current) return;
-    greeted.current = true;
+    if (!settings) return;
     const key = "c2.lastActive";
-    const last = Number(localStorage.getItem(key)) || null;
-    if (shouldGreet(Date.now(), last)) {
-      const name = settings.displayName || "Master";
-      const text = `Hello ${name}, kaise ho? Kaisa gaya aaj ka din?`;
-      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: text, language: "hinglish" }]);
-      speak(text, "hinglish");
-    }
-    const touch = () => localStorage.setItem(key, String(Date.now()));
-    touch();
-    const id = window.setInterval(touch, 60_000);
-    return () => window.clearInterval(id);
+    const greet = () => {
+      if (document.visibilityState !== "visible") { greeted.current = false; idleGeneration.current++; return; }
+      const last = Number(localStorage.getItem(key)) || null;
+      if (shouldGreet(Date.now(), last) && !greeted.current && !voice.current?.isBusy && !sendGuard.current.busy && !browserRef.current?.mediaActive()) {
+        const name = settings.displayName || "Master";
+        const language = settings.preferredLanguage === "en" ? "en" : settings.preferredLanguage === "hi" ? "hi" : "hinglish";
+        const variants = language === "en" ? [`Hello ${name}! How has your day been?`, `Hey ${name}, good to chat again. How are things today?`] : language === "hi" ? [`नमस्ते ${name}! आज का दिन कैसा रहा?`, `नमस्ते ${name}, कैसे हो आज? सब ठीक है?`] : [`Hello ${name}! Kaise ho aaj? Kaisa gaya din?`, `Hey ${name}, aaj sab badhiya? Kya chal raha hai?`];
+        const text = variants[Math.floor(Math.random() * variants.length)] ?? variants[0] ?? "";
+        setMessages(prev => [...prev, { id: uid(), role: "assistant", content: text, language }]);
+        speak(text, language);
+      }
+      greeted.current = true;
+      localStorage.setItem(key, String(Date.now()));
+    };
+    greet();
+    document.addEventListener("visibilitychange", greet);
+    const heartbeat = window.setInterval(() => { if (document.visibilityState === "visible") localStorage.setItem(key, String(Date.now())); }, 60_000);
+    return () => { document.removeEventListener("visibilitychange", greet); window.clearInterval(heartbeat); };
   }, [settings, speak]);
 
   useEffect(() => {
@@ -431,6 +494,8 @@ function CompanionApp() {
   }, [sidebarOpen]);
 
   const startListening = useCallback(() => {
+    if (voice.current?.isBusy || sendGuard.current.busy) { setMicStatus("Tap Stop before listening while C2 speaks; wait for any pending reply."); return; }
+    markInteraction();
     const SpeechRecognition =
       (window as unknown as { SpeechRecognition?: new () => never; webkitSpeechRecognition?: new () => never })
         .SpeechRecognition ??
@@ -453,31 +518,40 @@ function CompanionApp() {
       recognitionRef.current = recognition;
       recognition.lang = settings?.preferredLanguage === "en" ? "en-IN" : "hi-IN";
       recognition.interimResults = false;
+      let received = false;
       recognition.onresult = (event) => {
+        if (recognitionRef.current !== recognition || received) return;
         const transcript = event.results[0][0].transcript;
         const now = Date.now();
         if (isDuplicateTranscript(transcript, lastTranscript.current, now)) return;
+        received = true;
         lastTranscript.current = { text: normalizeTranscript(transcript), at: now };
         setInput(transcript);
+        recognition.stop();
+        setMicStatus("Speech received");
         void handleSend(transcript);
       };
-      recognition.onerror = (event) => {
-        setListening(false);
-        toast.error(
-          event.error === "not-allowed"
-            ? "Microphone permission was denied. Allow it in your browser settings."
-            : "The microphone stopped. Try again.",
-        );
+      recognition.onerror = event => {
+        if (recognitionRef.current !== recognition) return;
+        setListening(false); setMicStatus(recognitionError(event.error));
+        toast.error(recognitionError(event.error));
+        recognitionRef.current = null;
+        recognition.stop();
       };
-      recognition.onend = () => { setListening(false); recognitionRef.current = null; };
+      recognition.onend = () => {
+        if (recognitionRef.current !== recognition) return;
+        setListening(false); recognitionRef.current = null;
+        if (!received) setMicStatus("Listening ended. Tap the microphone to try again, or type.");
+      };
       setListening(true);
+      setMicStatus("Listening…");
       recognition.start();
     } catch {
       recognitionRef.current = null;
       setListening(false);
       toast.error("Could not start the microphone.");
     }
-  }, [settings?.preferredLanguage, handleSend]);
+  }, [settings?.preferredLanguage, handleSend, markInteraction]);
 
   if (!settings) {
     return (
@@ -493,6 +567,7 @@ function CompanionApp() {
   return (
     <div className="c2-app c2-galaxy relative min-h-[100dvh] w-full overflow-x-hidden text-foreground"
       onPointerDown={event => {
+        markInteraction();
         const target = event.target as HTMLElement;
         if (!event.isPrimary || target.closest(GESTURE_EXEMPT) || target.closest("[data-zone]")) { swipeStart.current = null; return; }
         if (!sidebarOpen && event.clientX > EDGE_ZONE_PX) { swipeStart.current = null; return; }
@@ -540,6 +615,11 @@ function CompanionApp() {
           <Camera className="h-4 w-4" /><span className="hidden min-[360px]:inline">Capture</span>
         </button>
       </header>
+      {(chatStatus || micStatus || voiceNotice) && <div role="status" className="c2-glass relative z-30 mx-3 mb-2 rounded-xl px-3 py-2 text-[11px] text-muted-foreground">
+        {chatStatus && <p>{chatStatus}</p>}{micStatus && <p>{micStatus}</p>}{voiceNotice && <p>{voiceNotice}</p>}
+        {failedText && <Button size="sm" variant="ghost" disabled={thinking} onClick={() => void handleSend(failedText, true)}>Retry reply</Button>}
+        {voiceNotice && <Button size="sm" variant="ghost" onClick={() => { const last = [...messages].reverse().find(m => m.role === "assistant"); if (last) speak(last.content, detectLanguage(last.content).language); }}>Retry voice</Button>}
+      </div>}
       {commandStatus && <p role="status" className="c2-glass relative z-30 mx-3 mb-2 truncate rounded-full px-3 py-1 text-[11px] text-muted-foreground">Command: {commandStatus}</p>}
 
       <Tabs value={activeTab} onValueChange={value => { setActiveTab(value); if (value !== "settings") setCalibrating(false); }} className="relative min-w-0 flex-1">
@@ -779,6 +859,13 @@ function CompanionApp() {
             <Switch checked={settings.autoSpeak} onCheckedChange={(v) => update({ autoSpeak: v })} />
           </div>
 
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3"><Label htmlFor="proactive-conversation">Gentle check-ins</Label><Switch id="proactive-conversation" checked={settings.proactiveConversation} onCheckedChange={value => update({ proactiveConversation: value })} /></div>
+            <p className="text-[11px] text-muted-foreground">After you engage, C2 may offer one gentle check-in after 75 seconds of quiet, only while Chat is visible. Never during voice input, C2 speech or browser media; at least 5 minutes apart. Turn off anytime. No background listening.</p>
+            <div className="flex items-center justify-between gap-3"><Label htmlFor="device-fallback">Device voice fallback</Label><Switch id="device-fallback" checked={settings.deviceVoiceFallback} onCheckedChange={value => update({ deviceVoiceFallback: value })} /></div>
+            <p className="text-[11px] text-muted-foreground">Use an installed device voice if Gemini voice has a temporary failure. Access denials and configuration errors are not retried or bypassed.</p>
+          </div>
+
           <div className="flex items-center justify-between">
             <Label>Show touch zones</Label>
             <Switch checked={showZones} onCheckedChange={setShowZones} />
@@ -891,15 +978,15 @@ function CompanionApp() {
           <MessageCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
           <input
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => { markInteraction(); setInput(event.target.value); }}
             onFocus={() => { if (activeTab !== "chat" && activeTab !== "browser") setActiveTab("chat"); }}
-            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void handleSend(); } }}
+            onKeyDown={(event) => { if (event.key === "Enter" && !event.repeat) { event.preventDefault(); void handleSend(); } }}
             placeholder="Ask Anything"
             aria-label="Message C2"
             className="h-10 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
-          {voiceStatus === "speaking" ? (
-            <button type="button" onClick={() => voice.current?.stop()} aria-label="Stop C2 speaking" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent text-accent-foreground transition-colors">
+          {voiceStatus === "speaking" || voiceStatus === "preparing" ? (
+            <button type="button" onClick={() => { idleState.current.consumed = true; idleGeneration.current++; voice.current?.stop(); manager.current?.reset("explicit stop"); setVoiceStatus("idle"); }} aria-label="Stop C2 speaking" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent text-accent-foreground transition-colors">
               <Square className="h-4 w-4" />
             </button>
           ) : (
