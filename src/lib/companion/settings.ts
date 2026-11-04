@@ -22,6 +22,8 @@ export type CompanionSettings = {
   geminiVoice: string;
   sovitsUrl: string;
   autoSpeak: boolean;
+  proactiveConversation: boolean;
+  deviceVoiceFallback: boolean;
   touchEnabled: boolean;
   protectedZonesEnabled: boolean;
   boundaryCooldownMs: number;
@@ -55,6 +57,8 @@ export const DEFAULT_SETTINGS: CompanionSettings = {
   geminiVoice: "Kore",
   sovitsUrl: "",
   autoSpeak: true,
+  proactiveConversation: true,
+  deviceVoiceFallback: true,
   touchEnabled: true,
   // Protected zones stay OFF until the user explicitly enables them.
   protectedZonesEnabled: false,

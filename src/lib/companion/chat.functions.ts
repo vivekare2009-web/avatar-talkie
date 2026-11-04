@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import type { DetectedLanguage } from "./language";
+import { buildSystemPrompt, parseTags, retryDelay } from "./conversation";
 
 const GATEWAY = "https://ai.gateway.lovable.dev/v1";
 const CHAT_MODEL = "google/gemini-3.8-flash";
@@ -16,6 +17,7 @@ export type ChatReply = {
   saved: { key: string; value: string }[];
   notice?: string | undefined;
   model: string;
+  status?: number;
 };
 
 const messageSchema = z.object({
@@ -29,59 +31,9 @@ const inputSchema = z.object({
   language: z.enum(["hi", "hinglish", "en"]),
   messages: z.array(messageSchema).min(1).max(24),
   memories: z.array(z.object({ key: z.string(), value: z.string() })).max(60).default([]),
+  mode: z.enum(["reply", "checkin"]).default("reply"),
+  freshRequest: z.boolean().default(true),
 });
-
-const LANGUAGE_RULES: Record<DetectedLanguage, string> = {
-  hi: "Reply ONLY in natural Hindi written in Devanagari script. Do not use English sentences.",
-  hinglish:
-    "Reply in warm, natural Hinglish (Romanized Hindi mixed with a little English), exactly how young Indians text. Do NOT reply in pure English.",
-  en: "Reply in natural, friendly English.",
-};
-
-const FALLBACKS: Record<DetectedLanguage, string> = {
-  hi: "अभी मैं जवाब नहीं बना पा रही — कनेक्शन में दिक्कत है। थोड़ी देर में फिर कोशिश करो, मैं यहीं हूँ.",
-  hinglish: "Abhi main reply nahi bana pa rahi, connection me dikkat hai. Thodi der baad try karo, main yahin hoon.",
-  en: "I can't reach my brain right now — there's a connection problem. Try again in a moment, I'm still here.",
-};
-
-function buildSystemPrompt(
-  language: DetectedLanguage,
-  displayName: string,
-  memories: { key: string; value: string }[],
-) {
-  const memoryBlock = memories.length
-    ? memories.map((m) => `- ${m.key}: ${m.value}`).join("\n")
-    : "- (nothing remembered yet)";
-  return [
-    "You are C2, a caring, playful AI companion with a warm personality and clear personal boundaries.",
-    displayName ? `The person you are talking to is called ${displayName}.` : "",
-    LANGUAGE_RULES[language],
-    "Keep replies short and spoken-friendly: 1-3 sentences, no markdown, no bullet lists, no emoji spam.",
-    "You have long-term memory. Things you already know:",
-    memoryBlock,
-    "If the person shares a durable fact worth remembering (name, city, job, likes, dislikes, important dates, relationships),",
-    'append on its own final line: <<REMEMBER key="short_key" value="the fact">> (max 2 per reply). Never mention this tag out loud.',
-    'If the message is disrespectful, sexual, or crosses your boundaries, answer firmly but kindly and append on its own final line: <<MOOD upset>>.',
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function parseTags(raw: string) {
-  const saved: { key: string; value: string }[] = [];
-  let mood: "neutral" | "upset" = "neutral";
-  let text = raw;
-
-  text = text.replace(/<<REMEMBER\s+key="([^"]{1,80})"\s+value="([^"]{1,500})"\s*>>/gi, (_m, key, value) => {
-    saved.push({ key: String(key).trim(), value: String(value).trim() });
-    return "";
-  });
-  text = text.replace(/<<MOOD\s+upset\s*>>/gi, () => {
-    mood = "upset";
-    return "";
-  });
-  return { text: text.trim(), saved, mood };
-}
 
 function gatewayNotice(status: number): string {
   if (status === 401) return "The AI service is not configured correctly (missing key).";
@@ -91,13 +43,54 @@ function gatewayNotice(status: number): string {
   return `The AI service returned an error (${status}).`;
 }
 
+async function safeGatewayError(response: Response) {
+  try {
+    const value = await response.json() as { message?: string; error?: { message?: string; type?: string }; type?: string };
+    return { message: (value.message ?? value.error?.message ?? gatewayNotice(response.status)).slice(0, 600), type: value.type ?? value.error?.type ?? "" };
+  } catch { return { message: gatewayNotice(response.status), type: "" }; }
+}
+
+async function paused(model: string, freshRequest: boolean) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await supabaseAdmin.from("companion_ai_pause").select("status,reason").eq("model", model).maybeSingle();
+  if (error) return { status: 503, reason: "AI access status could not be checked. Please retry manually." };
+  // A fresh user request is allowed to test restoration; automation remains parked.
+  if (data && !freshRequest) return data;
+  return null;
+}
+
+async function recordPause(model: string, status: number, reason: string) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { error } = await supabaseAdmin.from("companion_ai_pause").upsert({ model, status, reason, paused_at: new Date().toISOString() });
+  if (error) throw new Error("AI pause could not be saved");
+}
+
+async function clearPause(model: string) {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  await supabaseAdmin.from("companion_ai_pause").delete().eq("model", model);
+}
+
+/** One status-aware retry layer, never replay a denial or a partially read reply. */
+async function gatewayFetch(url: string, init: RequestInit) {
+  for (let attempt = 0; ; attempt++) {
+    let response: Response;
+    try { response = await fetch(url, init); }
+    catch { throw new Error("Could not reach the AI service. Check your connection and retry manually."); }
+    if (response.ok) return response;
+    const delay = retryDelay(response.status, attempt, response.headers.get("Retry-After"));
+    if (delay === null) return response;
+    await response.body?.cancel();
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
 export const sendChat = createServerFn({ method: "POST" })
   .inputValidator((data) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<ChatReply> => {
     const apiKey = process.env["LOVABLE_API_KEY"];
     const base: ChatReply = {
       ok: false,
-      reply: FALLBACKS[data.language],
+      reply: "",
       language: data.language,
       fallback: true,
       mood: "neutral",
@@ -108,16 +101,18 @@ export const sendChat = createServerFn({ method: "POST" })
     if (!apiKey) {
       return { ...base, notice: "The AI service is not configured (missing key)." };
     }
+    const pause = await paused(CHAT_MODEL, data.freshRequest);
+    if (pause) return { ...base, notice: pause.reason, status: pause.status };
 
     let response: Response;
     try {
-      response = await fetch(`${GATEWAY}/chat/completions`, {
+      response = await gatewayFetch(`${GATEWAY}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: CHAT_MODEL,
           messages: [
-            { role: "system", content: buildSystemPrompt(data.language, data.displayName, data.memories) },
+            { role: "system", content: buildSystemPrompt(data.language, data.displayName, data.memories, data.mode) },
             ...data.messages,
           ],
         }),
@@ -127,14 +122,17 @@ export const sendChat = createServerFn({ method: "POST" })
     }
 
     if (!response.ok) {
-      return { ...base, notice: gatewayNotice(response.status) };
+      const error = await safeGatewayError(response);
+      if (response.status === 402 || response.status === 403) await recordPause(CHAT_MODEL, response.status, error.message);
+      return { ...base, notice: error.message, status: response.status };
     }
 
     let text = "";
     try {
       const json = (await response.json()) as {
-        choices?: { message?: { content?: string } }[];
+        choices?: { finish_reason?: string; message?: { content?: string; refusal?: string } }[];
       };
+      if (json.choices?.[0]?.message?.refusal || json.choices?.[0]?.finish_reason === "content_filter") return { ...base, status: 422, notice: json.choices?.[0]?.message?.refusal || "The AI service declined this request." };
       text = json.choices?.[0]?.message?.content ?? "";
     } catch {
       return { ...base, notice: "The AI service sent an unreadable response." };
@@ -143,10 +141,11 @@ export const sendChat = createServerFn({ method: "POST" })
     if (!text.trim()) return { ...base, notice: "The AI service returned an empty reply." };
 
     const parsed = parseTags(text);
+    await clearPause(CHAT_MODEL);
     const savedOk: { key: string; value: string }[] = [];
     let notice: string | undefined;
 
-    if (parsed.saved.length) {
+    if (data.mode === "reply" && parsed.saved.length) {
       try {
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         for (const item of parsed.saved) {
@@ -171,7 +170,7 @@ export const sendChat = createServerFn({ method: "POST" })
 
     return {
       ok: true,
-      reply: parsed.text || FALLBACKS[data.language],
+      reply: parsed.text,
       language: data.language,
       fallback: false,
       mood: parsed.mood,
@@ -181,7 +180,7 @@ export const sendChat = createServerFn({ method: "POST" })
     };
   });
 
-export type SpeechResult = { ok: boolean; audioBase64?: string; mimeType?: string; error?: string };
+export type SpeechResult = { ok: boolean; audioBase64?: string; mimeType?: string; error?: string; status?: number; fallbackAllowed?: boolean };
 
 export const synthesizeSpeech = createServerFn({ method: "POST" })
   .inputValidator((data) =>
@@ -189,21 +188,24 @@ export const synthesizeSpeech = createServerFn({ method: "POST" })
       .object({
         text: z.string().trim().min(1).max(800),
         voice: z.string().trim().min(1).max(40).default("Kore"),
+        freshRequest: z.boolean().default(true),
       })
       .parse(data),
   )
   .handler(async ({ data }): Promise<SpeechResult> => {
     const apiKey = process.env["LOVABLE_API_KEY"];
     if (!apiKey) return { ok: false, error: "The AI voice is not configured." };
+    const pause = await paused(TTS_MODEL, data.freshRequest);
+    if (pause) return { ok: false, error: pause.reason, status: pause.status, fallbackAllowed: false };
 
     let response: Response;
     try {
-      response = await fetch(`${GATEWAY}/audio/speech`, {
+      response = await gatewayFetch(`${GATEWAY}/audio/speech`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: TTS_MODEL,
-          contents: [{ role: "user", parts: [{ text: data.text }] }],
+          contents: [{ role: "user", parts: [{ text: `Read the following text warmly and conversationally, with natural pauses. Speak only the text, preserving its language and wording:\n${data.text}` }] }],
           generationConfig: {
             responseModalities: ["AUDIO"],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: data.voice } } },
@@ -215,10 +217,15 @@ export const synthesizeSpeech = createServerFn({ method: "POST" })
       return { ok: false, error: "Could not reach the voice service." };
     }
 
-    if (!response.ok) return { ok: false, error: gatewayNotice(response.status) };
+    if (!response.ok) {
+      const error = await safeGatewayError(response);
+      if (response.status === 402 || response.status === 403) await recordPause(TTS_MODEL, response.status, error.message);
+      return { ok: false, error: error.message, status: response.status, fallbackAllowed: response.status === 429 || response.status >= 500 };
+    }
 
     const buffer = await response.arrayBuffer();
     if (buffer.byteLength === 0) return { ok: false, error: "The voice service returned no audio." };
+    await clearPause(TTS_MODEL);
 
     const bytes = new Uint8Array(buffer);
     let binary = "";

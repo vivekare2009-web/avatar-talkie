@@ -14,6 +14,27 @@ export type Database = {
   }
   public: {
     Tables: {
+      companion_ai_pause: {
+        Row: {
+          model: string
+          paused_at: string
+          reason: string
+          status: number
+        }
+        Insert: {
+          model: string
+          paused_at?: string
+          reason: string
+          status: number
+        }
+        Update: {
+          model?: string
+          paused_at?: string
+          reason?: string
+          status?: number
+        }
+        Relationships: []
+      }
       companion_memories: {
         Row: {
           created_at: string

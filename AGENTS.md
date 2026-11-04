@@ -16,3 +16,5 @@
 - Store imported character packages in browser IndexedDB and render validated GLB/GLTF/FBX with React Three Fiber; keep muted state videos as the failure fallback so a bad model cannot break C2.
 - Keep camera presets/framing in browser-safe helpers and Studio controls outside the portrait canvas so mobile controls never obscure the character.
 - Load Bun test declarations without Bun global runtime types; this browser/Worker app must retain the standard fetch contract.
+- Keep conversation prompt, tag preparation, send admission and idle eligibility in browser-safe pure helpers; all C2 speech uses one token-owned controller so foreground check-ins cannot overlap playback.
+- Persist AI denial/credit pauses in the service-only companion_ai_pause table; automatic check-ins remain parked until a fresh user request succeeds, preventing retries across restarts.

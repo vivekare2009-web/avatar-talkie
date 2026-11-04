@@ -17,6 +17,7 @@ export type ActionOutcome = { status: "completed" | "playing" | "blocked" | "fai
 export type BrowserHandle = {
   run: (action: BrowserAction, onStep: (step: string) => void) => Promise<ActionOutcome>;
   pauseMedia: () => void;
+  mediaActive: () => boolean;
 };
 
 const YT_ORIGIN = "https://www.youtube-nocookie.com";
@@ -48,7 +49,7 @@ export function InAppBrowser({ ref, onLog }: { ref: Ref<BrowserHandle>; onLog: (
   // One listener for YouTube player state; removed on unmount.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== YT_ORIGIN || typeof event.data !== "string") return;
+      if (event.origin !== YT_ORIGIN || event.source !== playerRef.current?.contentWindow || typeof event.data !== "string") return;
       try {
         const msg = JSON.parse(event.data) as { event?: string; info?: { playerState?: number } };
         const s = msg.info?.playerState;
@@ -58,6 +59,8 @@ export function InAppBrowser({ ref, onLog }: { ref: Ref<BrowserHandle>; onLog: (
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  useEffect(() => { playerStateRef.current = null; setPlayerState(null); }, [current, reloadKey]);
 
   const push = useCallback((entry: Entry) => {
     const { stack: s, index: i } = stackRef.current;
@@ -145,6 +148,11 @@ export function InAppBrowser({ ref, onLog }: { ref: Ref<BrowserHandle>; onLog: (
   useImperativeHandle(ref, () => ({
     run,
     pauseMedia: () => { if (playerStateRef.current === 1) postPlayer("pauseVideo"); },
+    // Unknown embedded media cannot be inspected safely; conservatively suppress check-ins.
+    mediaActive: () => {
+      const entry = stackRef.current.stack[stackRef.current.index];
+      return entry?.kind === "page" && entry.embeddable || entry?.kind === "player" && playerStateRef.current !== 0 && playerStateRef.current !== 2;
+    },
   }), [run]);
 
   const submitAddress = async () => {
