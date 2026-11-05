@@ -43,7 +43,7 @@ import { loadSettings, saveSettings, type CompanionSettings, type VoiceEngine } 
 import { loadAssetLibrary } from "@/lib/companion/videoAssetStore";
 import { BUNDLED_CLIPS } from "@/lib/companion/bundledAssets";
 import { VoiceController } from "@/lib/companion/voice";
-import { inspectModelUpload, listModelPackages, removeModelPackage, saveModelPackage, type ModelPackage } from "@/lib/companion/modelPackage";
+import { inspectModelUpload, selectModelCandidate, listModelPackages, removeModelPackage, saveModelPackage, type ModelPackage } from "@/lib/companion/modelPackage";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -97,6 +97,8 @@ function CompanionApp() {
   const modelToken = useRef(0);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [pendingModel, setPendingModel] = useState<ModelPackage | null>(null);
+  const [modelStage, setModelStage] = useState("");
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
@@ -410,10 +412,10 @@ function CompanionApp() {
   }, []);
 
   const modelFailed = useCallback((message: string) => {
-    setModelError(message); setModelBusy(false); setModelReady(false); log(`3D model: ${message}`);
+    setModelStage("Import failed"); setModelError(message); setModelBusy(false); setModelReady(false); log(`3D model: ${message}`);
   }, [log]);
   const modelLoaded = useCallback((id: string, clips: string[]) => {
-    setModelReady(true); setModelBusy(false); setModelClips(clips);
+    setModelStage("Rendered in viewport"); setModelReady(true); setModelBusy(false); setModelClips(clips);
     setModelError(null);
     try { localStorage.setItem("c2.activeModel", id); } catch { log("Active model selection could not be saved."); }
     log("3D character rendered");
@@ -428,16 +430,30 @@ function CompanionApp() {
   }, [models]);
   const importModel = useCallback(async (file: File) => {
     const token = ++modelToken.current;
-    setModelBusy(true); setModelError(null);
+    setModelBusy(true); setModelError(null); setPendingModel(null);
     try {
-      const parsed = await inspectModelUpload(file);
+      const parsed = await inspectModelUpload(file, stage => { if (token === modelToken.current) setModelStage(stage); });
       if (token !== modelToken.current) return;
+      if ((parsed.candidates?.length ?? 0) > 1) { setPendingModel(parsed); setModelBusy(false); return; }
+      setModelStage("Parsing model and loading textures");
       setModelPackage(parsed); setModelReady(false); setModelClips([]); setAppearance(DEFAULT_APPEARANCE); setModelPreview(null);
       setCameraView(DEFAULT_CAMERA);
     } catch (error) {
       if (token === modelToken.current) { setModelError(error instanceof Error ? error.message : "Import failed."); setModelBusy(false); }
     }
   }, []);
+  const chooseCandidate = useCallback(async (path: string) => {
+    if (!pendingModel) return;
+    const token = ++modelToken.current;
+    setModelBusy(true); setModelError(null); setModelStage("Checking selected model resources");
+    try {
+      const selected = await selectModelCandidate(pendingModel, path);
+      if (token !== modelToken.current) return;
+      setPendingModel(null); setModelPackage(selected); setModelReady(false); setModelClips([]);
+      setAppearance(DEFAULT_APPEARANCE); setCameraView(DEFAULT_CAMERA); setModelPreview(null);
+      setModelStage("Parsing model and loading textures");
+    } catch (error) { if (token === modelToken.current) { setModelError(error instanceof Error ? error.message : "Candidate selection failed."); setModelBusy(false); } }
+  }, [pendingModel]);
   useEffect(() => {
     if (!modelPackage || !modelReady || models.some(item => item.id === modelPackage.id)) return;
     const token = modelToken.current;
@@ -546,7 +562,8 @@ function CompanionApp() {
       setListening(true);
       setMicStatus("Listening…");
       recognition.start();
-    } catch {
+    } catch (error) {
+      setMicStatus(error instanceof DOMException && error.name === "NotAllowedError" ? recognitionError("not-allowed") : "Could not start listening. Check microphone access, then tap to retry or type.");
       recognitionRef.current = null;
       setListening(false);
       toast.error("Could not start the microphone.");
@@ -678,7 +695,7 @@ function CompanionApp() {
         </TabsContent>
 
         <TabsContent value="avatar" className="c2-glass relative z-20 mx-3 mt-3 max-h-[55dvh] space-y-3 overflow-y-auto rounded-3xl p-3">
-          <ModelStudioSettings models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} view={cameraView} onView={setCameraView} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => { setCameraView(DEFAULT_CAMERA); setCameraReset(n => n + 1); }} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
+          <ModelStudioSettings pending={pendingModel} stage={modelStage} onCandidate={path => void chooseCandidate(path)} onCancelCandidate={() => { modelToken.current++; setPendingModel(null); setModelStage(""); setModelBusy(false); }} models={models} model={modelPackage} busy={modelBusy} progress={modelProgress} ready={modelReady} error={modelError} clips={modelClips} appearance={appearance} preview={modelPreview} view={cameraView} onView={setCameraView} onImport={file => void importModel(file)} onSelect={selectModel} onAppearance={setAppearance} onPreview={setModelPreview} onReset={() => { setCameraView(DEFAULT_CAMERA); setCameraReset(n => n + 1); }} onRetry={() => { setModelError(null); setModelReady(false); setModelRetry(n => n + 1); }} onRemove={() => {
             if (!modelPackage) return;
             const id = modelPackage.id;
             modelToken.current++;

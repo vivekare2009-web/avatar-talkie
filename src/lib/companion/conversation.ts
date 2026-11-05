@@ -24,7 +24,7 @@ export function requestsQuiet(text: string) {
   return /\b(leave it|don['’]?t ask|do not ask|want quiet|be quiet|stop asking|no check.?ins|chup|shaant reh|mat poocho|mat pucho|rehne do|baat nahi karni)\b|मत पूछ|चुप|शांत रह|बात नहीं करनी/i.test(text);
 }
 
-export function parseTags(raw: string) {
+export function parseTags(raw: string): { text: string; saved: { key: string; value: string }[]; mood: "neutral" | "upset" } {
   const saved: { key: string; value: string }[] = [];
   let mood: "neutral" | "upset" = "neutral";
   const text = raw.replace(/<<REMEMBER\s+key="([^"]{1,80})"\s+value="([^"]{1,500})"\s*>>/gi, (_match, key: string, value: string) => {

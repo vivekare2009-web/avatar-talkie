@@ -103,12 +103,13 @@ export function ModelStudioViewer({ model, state, appearance, reset, view, onVie
   useEffect(() => {
     let live = true;
     let owned: LoadedCharacter | null = null;
+    const controller = new AbortController();
     loadedNotice.current = false;
     setRendered(false);
     setLoaded(null);
     onProgress(0);
-    const timer = window.setTimeout(() => { if (live) { live = false; onError("Model loading timed out. Try a smaller GLB."); } }, 30000);
-    void loadCharacter(model, value => { if (live) onProgress(value); }).then(result => {
+    const timer = window.setTimeout(() => { if (live) { live = false; controller.abort(); onError("Model loading timed out. Try a smaller GLB."); } }, 30000);
+    void loadCharacter(model, value => { if (live) onProgress(value); }, controller.signal).then(result => {
       window.clearTimeout(timer);
       if (!live) { disposeCharacter(result.object); return; }
       owned = result;
@@ -117,7 +118,7 @@ export function ModelStudioViewer({ model, state, appearance, reset, view, onVie
       window.clearTimeout(timer);
       if (live) onError(error instanceof Error ? error.message : "This model could not load.");
     });
-    return () => { live = false; window.clearTimeout(timer); if (owned) disposeCharacter(owned.object); };
+    return () => { live = false; controller.abort(); window.clearTimeout(timer); if (owned) disposeCharacter(owned.object); };
   }, [model, onProgress, onError]);
   useEffect(() => {
     if (!loaded || !rendered || loadedNotice.current) return;
