@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { ModelPackage } from "@/lib/companion/modelPackage";
 import { animationForState, cameraPreset, type CameraView, type CameraPreset, type ModelAppearance, type ModelState } from "@/lib/companion/modelPresentation";
 
-export function ModelStudioSettings({ models, model, busy, progress, ready, error, clips, appearance, preview, view, onView, onImport, onSelect, onRemove, onRetry, onReset, onAppearance, onPreview }: {
+export function ModelStudioSettings({ models, model, pending, stage, onCandidate, onCancelCandidate, busy, progress, ready, error, clips, appearance, preview, view, onView, onImport, onSelect, onRemove, onRetry, onReset, onAppearance, onPreview }: {
+  pending: ModelPackage | null; stage: string; onCandidate: (path: string) => void; onCancelCandidate: () => void;
   models: ModelPackage[]; model: ModelPackage | null; busy: boolean; progress: number; ready: boolean; error: string | null; clips: string[];
   appearance: ModelAppearance; preview: ModelState | null;
   view: CameraView; onView: (value: CameraView) => void;
@@ -19,9 +20,11 @@ export function ModelStudioSettings({ models, model, busy, progress, ready, erro
     <div className="flex items-center justify-between gap-2">
       <h2 className="flex items-center gap-2 text-sm font-semibold"><Box className="h-4 w-4 text-primary" />3D Model Studio</h2>
       <Button size="sm" variant="outline" className="bg-secondary/30" disabled={busy} onClick={() => upload.current?.click()}><Upload className="h-3.5 w-3.5" />{model ? "Replace" : "Import"}</Button>
-      <input ref={upload} type="file" aria-label="Import 3D model" className="hidden" accept=".zip,.glb,.gltf,.fbx" onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImport(file); }} />
+      <input ref={upload} type="file" aria-label="Import 3D model" className="hidden" accept=".zip,.glb,.gltf,.fbx,.pmx,.blend" onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onImport(file); }} />
     </div>
-    <p className="text-[11px] leading-relaxed text-muted-foreground">GLB recommended. GLTF with embedded resources, or a ZIP with the model, BIN and PNG/JPG/WebP textures in their original folders. FBX supported where its resources are included. Blender .blend must be exported first.</p>
+    <p className="text-[11px] leading-relaxed text-muted-foreground">GLB, GLTF, FBX or PMX; ZIP folders stay intact. PMX is a private local preview: bones and vertex morphs supported; no VMD or physics. Blender .blend requires export. Maximum 100 MB upload, 150 MB expanded, 200 files. Large textures may exceed phone memory.</p>
+    {stage && <p role="status" className="break-words text-xs text-muted-foreground">{stage}</p>}
+    {pending && <div className="space-y-2"><Select onValueChange={onCandidate}><SelectTrigger aria-label="Model inside ZIP" className="w-full min-w-0"><SelectValue placeholder="Choose model inside ZIP" /></SelectTrigger><SelectContent>{pending.candidates?.map(candidate => <SelectItem key={candidate.path} value={candidate.path}>{candidate.path}</SelectItem>)}</SelectContent></Select><Button size="sm" variant="ghost" onClick={onCancelCandidate}>Cancel import</Button></div>}
     {!!models.length && <div className="space-y-1.5"><label className="text-xs text-muted-foreground">Active character</label><Select value={model?.id ?? ""} onValueChange={onSelect}><SelectTrigger aria-label="Active character" className="w-full min-w-0 bg-secondary/20"><SelectValue placeholder="Select character" /></SelectTrigger><SelectContent>{models.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>}
     {(busy || model) && <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" role="status">
       {(!ready && !error) && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
