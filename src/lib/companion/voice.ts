@@ -86,19 +86,19 @@ export class VoiceController {
       if (match) utterance.voice = match;
       utterance.rate = 0.97; utterance.pitch = 1;
       let settled = false;
-      const finish = () => {
+      const cleanup = () => {
         if (settled) return;
         settled = true;
         utterance.onstart = null; utterance.onend = null; utterance.onerror = null;
         if (this.cancelPlayback === finish) this.cancelPlayback = null;
-        resolve();
       };
+      const finish = () => { if (settled) return; cleanup(); resolve(); };
       this.cancelPlayback = finish;
       utterance.onstart = started;
       utterance.onend = finish;
       utterance.onerror = () => {
         if (settled) return;
-        finish();
+        cleanup();
         reject(new Error("Device voice stopped. Tap to retry; the reply remains in chat."));
       };
       window.speechSynthesis.speak(utterance);
