@@ -11,4 +11,6 @@
 - [ ] Phase 3: persistent controls, foreground idle eligibility and session greeting cleanup
 - [ ] Phase 3: voice preparation/fallback, send/recognition/stale-response recovery
 - [ ] Phase 3: regression suite, automatic compilation and mobile flow verification
+- [ ] Phase 3 — Sub-Phase: 3D Model Studio Importer Repair & Upgrade: recursive discovery, resource resolution, candidates, compatible PMX and cleanup tests
+- [ ] Phase 3 importer: named archive availability matrix and actual mobile render verification
 - [x] Studio regression tests, automatic typecheck/build, and 320/390/430px verification

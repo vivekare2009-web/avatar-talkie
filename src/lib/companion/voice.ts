@@ -85,11 +85,22 @@ export class VoiceController {
       const match = voices.find(v => v.lang.replace("_", "-").toLowerCase() === locale.toLowerCase()) ?? voices.find(v => v.lang.toLowerCase().startsWith(locale.slice(0, 2)));
       if (match) utterance.voice = match;
       utterance.rate = 0.97; utterance.pitch = 1;
-      const finish = () => { this.cancelPlayback = null; resolve(); };
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        utterance.onstart = null; utterance.onend = null; utterance.onerror = null;
+        if (this.cancelPlayback === finish) this.cancelPlayback = null;
+        resolve();
+      };
       this.cancelPlayback = finish;
       utterance.onstart = started;
       utterance.onend = finish;
-      utterance.onerror = () => { this.cancelPlayback = null; reject(new Error("Device voice stopped. Tap to retry; the reply remains in chat.")); };
+      utterance.onerror = () => {
+        if (settled) return;
+        finish();
+        reject(new Error("Device voice stopped. Tap to retry; the reply remains in chat."));
+      };
       window.speechSynthesis.speak(utterance);
     });
   }
