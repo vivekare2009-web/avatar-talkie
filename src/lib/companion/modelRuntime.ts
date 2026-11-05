@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import type { ModelPackage } from "./modelPackage";
+import { validateModelResources, type ModelPackage } from "./modelPackage";
+import { createPackageUrls, resolveModelPath } from "./modelPaths";
 
 export type LoadedCharacter = { object: THREE.Group; clips: THREE.AnimationClip[]; radius: number };
 export function disposeCharacter(object: THREE.Object3D) {
@@ -19,64 +20,72 @@ export function disposeCharacter(object: THREE.Object3D) {
   textures.forEach(texture => texture.dispose());
   materials.forEach(material => material.dispose());
 }
-function clean(path: string) {
-  const parts: string[] = [];
-  for (const part of path.replaceAll("\\", "/").split("/")) {
-    if (part === "..") parts.pop();
-    else if (part && part !== ".") parts.push(part);
-  }
-  return parts.join("/");
-}
-export async function loadCharacter(model: ModelPackage, progress: (value: number) => void): Promise<LoadedCharacter> {
-  const urls = new Map(model.files.map(file => [clean(file.path), URL.createObjectURL(file.blob)]));
-  const main = urls.get(clean(model.mainPath));
-  const directory = model.mainPath.split("/").slice(0, -1).join("/");
+export async function loadCharacter(model: ModelPackage, progress: (value: number) => void, signal?: AbortSignal): Promise<LoadedCharacter> {
+  await validateModelResources(model);
+  const { urls, release } = createPackageUrls(model.files);
   const manager = new THREE.LoadingManager();
   const missing: string[] = [];
+  const paths = [...urls.keys()];
+  const prefix = "c2-package/";
+  let object: THREE.Group | undefined;
+  let resourcesDone: () => void = () => {};
+  const resources = new Promise<void>(resolve => { resourcesDone = resolve; });
+  manager.onLoad = resourcesDone;
   manager.onError = url => { missing.push(url); };
+  manager.onProgress = (_url, loaded, total) => progress(Math.min(95, Math.round(loaded / Math.max(total, 1) * 95)));
+  const abort = () => { manager.abort(); release(); resourcesDone(); };
+  signal?.addEventListener("abort", abort, { once: true });
   manager.setURLModifier(requested => {
     if ([...urls.values()].includes(requested) || requested.startsWith("data:")) return requested;
-    let decoded: string;
-    try { decoded = decodeURIComponent(requested); } catch { throw new Error("Invalid texture path."); }
-    const relative = decoded.replace(/^blob:.*\//, "").replaceAll("\\", "/");
-    // FBX exports can carry the author's absolute texture paths. Resolve only
-    // to an unambiguous packaged basename, never to the network/filesystem.
-    const basename = relative.split("/").pop();
-    const matches = [...urls.entries()].filter(([path]) => path.split("/").pop() === basename);
-    const resolved = urls.get(clean(`${directory}/${relative}`)) ?? urls.get(clean(relative)) ?? (matches.length === 1 ? matches[0]?.[1] : undefined);
-    if (!resolved) throw new Error(`Missing or unsupported model resource: ${relative}. Include it in the ZIP.`);
-    return resolved;
+    let resolved: string;
+    try {
+      if (requested.startsWith(prefix)) {
+        resolved = resolveModelPath(paths, "root", requested.slice(prefix.length));
+      } else {
+        resolved = resolveModelPath(paths, model.mainPath, requested, model.format === "fbx");
+      }
+    } catch (error) { missing.push(requested); throw error; }
+    const url = urls.get(resolved);
+    if (!url) throw new Error(`Missing model resource: ${requested}`);
+    return url;
   });
-  manager.onProgress = (_url, loaded, total) => progress(Math.min(95, Math.round(loaded / Math.max(total, 1) * 95)));
-  let object: THREE.Group | undefined;
+  // A sentinel keeps the resource-completion gate open while the model creates texture requests.
+  manager.itemStart("character-parse");
   try {
-    if (!main) throw new Error("The main model file is missing.");
+    if (signal?.aborted) throw new Error("Model loading cancelled.");
+    const resourcePath = prefix + model.mainPath.split("/").slice(0, -1).join("/") + "/";
+    const virtualMain = prefix + model.mainPath;
     let clips: THREE.AnimationClip[];
-    if (model.format === "fbx") {
-      object = await new FBXLoader(manager).loadAsync(main);
+    if (model.format === "pmx") {
+      // The stdlib MMD loader retains the WebGL material pipeline. Native Three removed it in r172.
+      const { MMDLoader } = await import("three-stdlib");
+      const mesh = await new MMDLoader(manager).setResourcePath(resourcePath).loadAsync(virtualMain);
+      object = new THREE.Group(); object.add(mesh); clips = mesh.animations;
+    } else if (model.format === "fbx") {
+      object = await new FBXLoader(manager).setResourcePath(resourcePath).loadAsync(virtualMain);
       clips = object.animations;
     } else {
-      const gltf = await new GLTFLoader(manager).loadAsync(main);
-      object = gltf.scene;
-      clips = gltf.animations;
+      const gltf = await new GLTFLoader(manager).setResourcePath(resourcePath).loadAsync(virtualMain);
+      object = gltf.scene; clips = gltf.animations;
     }
-    if (missing.length) throw new Error("A texture or model resource failed to load. Check the ZIP contents.");
+    manager.itemEnd("character-parse");
+    await resources;
+    if (signal?.aborted) throw new Error("Model loading cancelled.");
+    if (missing.length) throw new Error(`Model resources failed: ${missing.join(", ")}. Include textures/BIN in their original folders.`);
     let meshes = 0;
     object.traverse(child => { if (child instanceof THREE.Mesh) meshes++; });
     const box = new THREE.Box3().setFromObject(object);
     const size = box.getSize(new THREE.Vector3());
     if (!meshes || !Number.isFinite(size.length()) || size.length() < 0.00001) throw new Error("This model has no visible geometry.");
     object.scale.multiplyScalar(2.8 / Math.max(size.y, size.x * 0.5, 0.001));
-    const scaled = new THREE.Box3().setFromObject(object);
-    const center = scaled.getCenter(new THREE.Vector3());
+    const center = new THREE.Box3().setFromObject(object).getCenter(new THREE.Vector3());
     object.position.sub(center);
     const sphere = new THREE.Box3().setFromObject(object).getBoundingSphere(new THREE.Sphere());
     progress(100);
     return { object, clips, radius: sphere.radius };
   } catch (error) {
+    manager.abort();
     if (object) disposeCharacter(object);
     throw error;
-  } finally {
-    urls.forEach(url => URL.revokeObjectURL(url));
-  }
+  } finally { signal?.removeEventListener("abort", abort); release(); }
 }
