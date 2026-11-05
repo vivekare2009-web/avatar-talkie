@@ -1,6 +1,8 @@
 import { unzip } from "fflate";
+import { BLENDER_GUIDANCE, modelExtension as extension, normalizeArchivePath, resolveModelPath } from "./modelPaths";
 
-export type SupportedModelFormat = "glb" | "gltf" | "fbx";
+export type SupportedModelFormat = "glb" | "gltf" | "fbx" | "pmx";
+export type ModelCandidate = { path: string; format: SupportedModelFormat };
 
 export type ModelPackageFile = {
   path: string;
@@ -14,6 +16,7 @@ export type ModelPackage = {
   mainPath: string;
   files: ModelPackageFile[];
   savedAt: number;
+  candidates?: ModelCandidate[];
 };
 
 export type ModelPackageSummary = Omit<ModelPackage, "files"> & {
@@ -27,20 +30,11 @@ const VERSION = 1;
 const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES = 150 * 1024 * 1024;
 const MAX_ENTRIES = 200;
-const MODEL_EXTENSIONS = ["glb", "gltf", "fbx"] as const;
-const AUXILIARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bin"]);
-
-function extension(path: string) {
-  return path.split(".").pop()?.toLowerCase() ?? "";
-}
-
-function cleanPath(path: string) {
-  return path.replaceAll("\\", "/").replace(/^\.\//, "");
-}
+const MODEL_EXTENSIONS = ["glb", "gltf", "fbx", "pmx"] as const;
+const AUXILIARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bin", "tga", "bmp", "sph", "spa"]);
 
 function safePath(path: string) {
-  const clean = cleanPath(path);
-  return Boolean(clean) && !clean.startsWith("/") && !clean.split("/").includes("..") && !/[:\u0000]/.test(clean);
+  try { normalizeArchivePath(path); return true; } catch { return false; }
 }
 
 function mimeFor(path: string) {
@@ -53,12 +47,8 @@ function mimeFor(path: string) {
   return "application/octet-stream";
 }
 
-function chooseMain(paths: string[]) {
-  for (const ext of MODEL_EXTENSIONS) {
-    const match = paths.find((path) => extension(path) === ext);
-    if (match) return { path: match, format: ext };
-  }
-  return null;
+export function discoverModelCandidates(paths: string[]): ModelCandidate[] {
+  return MODEL_EXTENSIONS.flatMap(format => paths.filter(path => extension(path) === format).map(path => ({ path, format })));
 }
 
 function createId() {
@@ -67,7 +57,8 @@ function createId() {
     : `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-export async function inspectModelUpload(file: File): Promise<ModelPackage> {
+export async function inspectModelUpload(file: File, progress: (stage: string) => void = () => {}): Promise<ModelPackage> {
+  progress("Reading package");
   if (file.size > MAX_ARCHIVE_BYTES) throw new Error("Model package is larger than 100 MB.");
   const directExt = extension(file.name);
   if (MODEL_EXTENSIONS.includes(directExt as SupportedModelFormat)) {
@@ -95,15 +86,16 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
     };
   }
   if (directExt !== "zip") {
-    if (directExt === "blend") throw new Error(".blend source files are not browser-renderable. Export the character as GLB first.");
-    throw new Error("Supported uploads are .zip, .glb, .gltf, and .fbx.");
+    if (directExt === "blend") throw new Error(BLENDER_GUIDANCE);
+    throw new Error("Supported uploads are ZIP, GLB, GLTF, FBX and PMX.");
   }
 
   let entries: Record<string, Uint8Array>;
   let expanded = 0;
   let count = 0;
+  progress("Extracting ZIP");
   try { const bytes = new Uint8Array(await file.arrayBuffer()); entries = await new Promise<Record<string, Uint8Array>>((resolve, reject) => { unzip(bytes, { filter: entry => {
-    count++;
+    if (!entry.name.endsWith("/")) count++;
     expanded += entry.originalSize;
     if (count > MAX_ENTRIES || expanded > MAX_EXTRACTED_BYTES || !safePath(entry.name)) throw new Error("ZIP exceeds safety limits or contains unsafe paths.");
     return true;
@@ -114,25 +106,51 @@ export async function inspectModelUpload(file: File): Promise<ModelPackage> {
   if (paths.some((path) => !safePath(path))) throw new Error("ZIP contains an unsafe file path and was blocked.");
   const total = paths.reduce((sum, path) => sum + (entries[path]?.byteLength ?? 0), 0);
   if (total > MAX_EXTRACTED_BYTES) throw new Error("ZIP expands beyond the 150 MB safety limit.");
-  const main = chooseMain(paths);
+  const candidates = discoverModelCandidates(paths);
+  const main = candidates[0];
   if (!main) {
     const hasBlend = paths.some((path) => extension(path) === "blend");
     throw new Error(hasBlend
-      ? "This ZIP contains a .blend source but no GLB, GLTF, or FBX. Export a web model from Blender and include it in the ZIP."
-      : "No supported model was found. ZIPs must contain a GLB, GLTF (+ BIN/textures), or FBX file.");
+      ? BLENDER_GUIDANCE
+      : "No supported model was found. ZIPs must contain GLB, GLTF, FBX or PMX; ZIPs inside ZIPs must be unpacked first.");
   }
-  const keptPaths = paths.filter((path) => path === main.path || AUXILIARY_EXTENSIONS.has(extension(path)));
-  return {
+  const keptPaths = paths.filter((path) => candidates.some(candidate => candidate.path === path) || AUXILIARY_EXTENSIONS.has(extension(path)));
+  const normalized = keptPaths.map(normalizeArchivePath);
+  if (new Set(normalized).size !== normalized.length) throw new Error("ZIP contains duplicate normalized paths.");
+  progress(candidates.length > 1 ? "Choose a model" : "Checking resources");
+  const model: ModelPackage = {
     id: createId(),
     name: file.name,
     format: main.format,
-    mainPath: cleanPath(main.path),
+    mainPath: normalizeArchivePath(main.path),
+    candidates: candidates.map(candidate => ({ ...candidate, path: normalizeArchivePath(candidate.path) })),
     files: keptPaths.map((path) => ({
-      path: cleanPath(path),
+      path: normalizeArchivePath(path),
       blob: new Blob([new Uint8Array(entries[path] ?? []).buffer], { type: mimeFor(path) }),
     })),
     savedAt: Date.now(),
   };
+  if (candidates.length === 1) await validateModelResources(model);
+  return model;
+}
+
+export async function validateModelResources(model: ModelPackage) {
+  if (model.format !== "gltf") return;
+  const main = model.files.find(file => file.path === model.mainPath);
+  if (!main) throw new Error("The main model file is missing.");
+  let parsed: { buffers?: { uri?: string }[]; images?: { uri?: string }[] };
+  try { parsed = JSON.parse(await main.blob.text()); } catch { throw new Error("This GLTF file is not valid JSON."); }
+  for (const item of [...(parsed.buffers ?? []), ...(parsed.images ?? [])]) {
+    if (item.uri && !item.uri.startsWith("data:")) resolveModelPath(model.files.map(file => file.path), model.mainPath, item.uri);
+  }
+}
+
+export async function selectModelCandidate(model: ModelPackage, path: string): Promise<ModelPackage> {
+  const candidate = model.candidates?.find(item => item.path === path);
+  if (!candidate) throw new Error("Select a model found in this package.");
+  const selected = { ...model, id: createId(), mainPath: candidate.path, format: candidate.format };
+  await validateModelResources(selected);
+  return selected;
 }
 
 function openDb() {
