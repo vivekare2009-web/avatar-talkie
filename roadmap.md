@@ -10,7 +10,9 @@
 - [ ] Phase 3: conversational prompt/tag safety and context-aware gentle check-ins
 - [ ] Phase 3: persistent controls, foreground idle eligibility and session greeting cleanup
 - [ ] Phase 3: voice preparation/fallback, send/recognition/stale-response recovery
-- [ ] Phase 3: regression suite, automatic compilation and mobile flow verification
-- [ ] Phase 3 — Sub-Phase: 3D Model Studio Importer Repair & Upgrade: recursive discovery, resource resolution, candidates, compatible PMX and cleanup tests
+- [x] Phase 3: regression suite (43 tests), TypeScript and production build green; 390/320px emulator layout checked
+- [ ] Phase 3: real-phone voice/mic/check-in verification (needs a physical device)
+- [x] Importer: recursive Unicode ZIP discovery, external BIN/texture resolution, candidates, missing-texture warnings (verified in tests + browser render)
+- [ ] Importer: PMX parse/render unverified — no real PMX fixture available
 - [ ] Phase 3 importer: named archive availability matrix and actual mobile render verification
 - [x] Studio regression tests, automatic typecheck/build, and 320/390/430px verification
