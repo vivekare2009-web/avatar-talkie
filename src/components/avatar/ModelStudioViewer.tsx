@@ -86,10 +86,10 @@ function CameraRig({ radius, appearance, view, reset, onView }: { radius: number
     onView({ angle: Math.round(THREE.MathUtils.radToDeg(control.getAzimuthalAngle())), elevation: Math.round(90 - THREE.MathUtils.radToDeg(control.getPolarAngle())), distance: camera.position.distanceTo(control.target) / limits.fit });
   }} enableDamping dampingFactor={0.08} enablePan screenSpacePanning panSpeed={0.35} minDistance={limits.min} maxDistance={limits.max} minPolarAngle={0.25} maxPolarAngle={Math.PI - 0.25} touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }} />;
 }
-export function ModelStudioViewer({ model, state, appearance, reset, view, onView, onLoaded, onProgress, onError }: {
+export function ModelStudioViewer({ model, state, appearance, reset, view, onView, onLoaded, onProgress, onError, onWarning }: {
   model: ModelPackage; state: ModelState; appearance: ModelAppearance; reset: number;
   view: CameraView; onView: (view: CameraView) => void;
-  onLoaded: (id: string, clips: string[]) => void; onProgress: (progress: number) => void; onError: (message: string) => void;
+  onLoaded: (id: string, clips: string[]) => void; onProgress: (progress: number) => void; onError: (message: string) => void; onWarning?: (message: string) => void;
 }) {
   const [loaded, setLoaded] = useState<LoadedCharacter | null>(null);
   const [rendered, setRendered] = useState(false);
@@ -113,6 +113,7 @@ export function ModelStudioViewer({ model, state, appearance, reset, view, onVie
       window.clearTimeout(timer);
       if (!live) { disposeCharacter(result.object); return; }
       owned = result;
+      result.warnings.forEach(message => onWarning?.(message));
       setLoaded(result);
     }).catch((error: unknown) => {
       window.clearTimeout(timer);

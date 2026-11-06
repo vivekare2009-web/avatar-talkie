@@ -4,7 +4,9 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { validateModelResources, type ModelPackage } from "./modelPackage";
 import { createPackageUrls, resolveModelPath } from "./modelPaths";
 
-export type LoadedCharacter = { object: THREE.Group; clips: THREE.AnimationClip[]; radius: number };
+export type LoadedCharacter = { object: THREE.Group; clips: THREE.AnimationClip[]; radius: number; warnings: string[] };
+/** Unresolvable references fail asynchronously so loaders keep geometry/materials and only lose that texture. */
+export const MISSING_RESOURCE_URL = "c2-missing:resource";
 export function disposeCharacter(object: THREE.Object3D) {
   const textures = new Set<THREE.Texture>();
   const materials = new Set<THREE.Material>();
@@ -44,9 +46,9 @@ export async function loadCharacter(model: ModelPackage, progress: (value: numbe
       } else {
         resolved = resolveModelPath(paths, model.mainPath, requested, model.format === "fbx");
       }
-    } catch (error) { missing.push(requested); throw error; }
+    } catch { missing.push(requested); return MISSING_RESOURCE_URL; }
     const url = urls.get(resolved);
-    if (!url) throw new Error(`Missing model resource: ${requested}`);
+    if (!url) { missing.push(requested); return MISSING_RESOURCE_URL; }
     return url;
   });
   // A sentinel keeps the resource-completion gate open while the model creates texture requests.
@@ -71,7 +73,8 @@ export async function loadCharacter(model: ModelPackage, progress: (value: numbe
     manager.itemEnd("character-parse");
     await resources;
     if (signal?.aborted) throw new Error("Model loading cancelled.");
-    if (missing.length) throw new Error(`Model resources failed: ${missing.join(", ")}. Include textures/BIN in their original folders.`);
+    const unique = [...new Set(missing.filter(url => url !== MISSING_RESOURCE_URL))];
+    const warnings = unique.length ? [`Missing textures/resources: ${unique.slice(0, 5).join(", ")}${unique.length > 5 ? ` (+${unique.length - 5} more)` : ""}. Include them in their original folders.`] : [];
     let meshes = 0;
     object.traverse(child => { if (child instanceof THREE.Mesh) meshes++; });
     const box = new THREE.Box3().setFromObject(object);
@@ -82,7 +85,7 @@ export async function loadCharacter(model: ModelPackage, progress: (value: numbe
     object.position.sub(center);
     const sphere = new THREE.Box3().setFromObject(object).getBoundingSphere(new THREE.Sphere());
     progress(100);
-    return { object, clips, radius: sphere.radius };
+    return { object, clips, radius: sphere.radius, warnings };
   } catch (error) {
     manager.abort();
     if (object) disposeCharacter(object);
